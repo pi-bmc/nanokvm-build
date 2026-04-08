@@ -1,51 +1,26 @@
 From a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2 Mon Sep 17 00:00:00 2001
 From: builder <builder@localhost.localdomain>
 Date: Tue, 08 Apr 2026 05:00:00 +0000
-Subject: [PATCH] board: add IPMI overlay files for NanoKVM over LAN support
+Subject: [PATCH] board: add IPMI module loading and LAN configuration helper
 
 ---
- board/cvitek/SG200X/overlay/etc/init.d/S10ipmi | 30 ++++++++++++++++++++++++++++++
+ board/cvitek/SG200X/overlay/etc/init.d/S00kmod | 3 +++
  board/cvitek/SG200X/overlay/usr/sbin/ipmi-setup | 29 +++++++++++++++++++++++++++++
- 2 files changed, 59 insertions(+)
- create mode 100755 board/cvitek/SG200X/overlay/etc/init.d/S10ipmi
+ 2 files changed, 32 insertions(+)
  create mode 100755 board/cvitek/SG200X/overlay/usr/sbin/ipmi-setup
 
-diff --git a/board/cvitek/SG200X/overlay/etc/init.d/S10ipmi b/board/cvitek/SG200X/overlay/etc/init.d/S10ipmi
-new file mode 100755
-index 0000000..0000001
---- /dev/null
-+++ b/board/cvitek/SG200X/overlay/etc/init.d/S10ipmi
-@@ -0,0 +1,30 @@
-+#!/bin/sh
-+#
-+# Load IPMI kernel modules for IPMI over LAN support
-+#
-+
-+case "$1" in
-+  start)
-+    printf "Loading IPMI kernel modules: "
-+    modprobe ipmi_msghandler 2>/dev/null
-+    modprobe ipmi_devintf 2>/dev/null
-+    modprobe ipmi_si 2>/dev/null
-+    [ -e /dev/ipmi0 ] && echo "OK" || echo "FAIL"
-+    ;;
-+  stop)
-+    printf "Unloading IPMI kernel modules: "
-+    rmmod ipmi_si 2>/dev/null
-+    rmmod ipmi_devintf 2>/dev/null
-+    rmmod ipmi_msghandler 2>/dev/null
-+    echo "OK"
-+    ;;
-+  restart|reload)
-+    "$0" stop
-+    "$0" start
-+    ;;
-+  *)
-+    echo "Usage: $0 {start|stop|restart}"
-+    exit 1
-+esac
-+
-+exit $?
+--- a/board/cvitek/SG200X/overlay/etc/init.d/S00kmod
++++ b/board/cvitek/SG200X/overlay/etc/init.d/S00kmod
+@@ -25,6 +25,9 @@
+ 	insmod soph_pwm.ko
+ 	insmod soph_saradc.ko
+ #	insmod soph_wiegand.ko # uncomment it if want use wiegand
++	insmod /lib/modules/$(uname -r)/kernel/drivers/char/ipmi/ipmi_msghandler.ko 2>/dev/null || true
++	insmod /lib/modules/$(uname -r)/kernel/drivers/char/ipmi/ipmi_devintf.ko 2>/dev/null || true
++	insmod /lib/modules/$(uname -r)/kernel/drivers/char/ipmi/ipmi_si.ko 2>/dev/null || true
+ 	echo "OK"
+ 	exit 0
+ fi
 diff --git a/board/cvitek/SG200X/overlay/usr/sbin/ipmi-setup b/board/cvitek/SG200X/overlay/usr/sbin/ipmi-setup
 new file mode 100755
 index 0000000..0000002

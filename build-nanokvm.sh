@@ -168,9 +168,9 @@ defconfig ${SG_BOARD_LINK}
 cd buildroot
 branchnanokvm=false
 if git checkout -b build ; then
+  [ -e ../host/buildroot-overlay-ipmi.patch ] && git am < ../host/buildroot-overlay-ipmi.patch || true
   rm -f board/cvitek/SG200X/overlay/etc/init.d/uvc-gadget-server.elf
   rm -f board/cvitek/SG200X/overlay/etc/init.d/uvc-gadget-server.tar.xz
-  [ -e ../host/buildroot-overlay-ipmi.patch ] && git am < ../host/buildroot-overlay-ipmi.patch || true
   git add board/cvitek/SG200X/overlay/etc/init.d
   git add board/cvitek/SG200X/overlay/usr/sbin
   git commit -m "build"
