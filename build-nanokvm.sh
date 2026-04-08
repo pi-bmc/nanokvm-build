@@ -178,6 +178,8 @@ elif git checkout build-nanokvm ; then
   branchnanokvm=true
 fi
 
+patch -p1 < ../patches/buildroot.patch
+
 # nanokvm only uses S00kmod, S01fs and S03usbdev
 rm -f board/cvitek/SG200X/overlay/etc/init.d/S07fs2
 rm -f board/cvitek/SG200X/overlay/etc/init.d/S07kmod2

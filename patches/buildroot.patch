@@ -1,0 +1,58 @@
+diff --git a/board/cvitek/SG200X/overlay/etc/init.d/S99ipmi_sim b/board/cvitek/SG200X/overlay/etc/init.d/S99ipmi_sim
+new file mode 100644
+index 0000000000..a4f2f4cf64
+--- /dev/null
++++ b/board/cvitek/SG200X/overlay/etc/init.d/S99ipmi_sim
+@@ -0,0 +1,52 @@
++#!/bin/sh
++
++. /etc/profile
++
++PIDFILE=/var/run/ipmi_sim.pid
++
++start() {
++	if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
++		echo "ipmi_sim is already running (pid $(cat "$PIDFILE"))"
++		return 1
++	fi
++	ipmi_sim -f /etc/ipmi/ipmisim1.emu -c /etc/ipmi/lan.conf -n >/dev/null 2>&1 &
++	echo $! > "$PIDFILE"
++}
++
++stop() {
++	if [ -f "$PIDFILE" ]; then
++		kill "$(cat "$PIDFILE")" 2>/dev/null
++		rm -f "$PIDFILE"
++	else
++		echo "ipmi_sim is not running"
++		return 1
++	fi
++}
++
++status() {
++	if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
++		echo "ipmi_sim is running (pid $(cat "$PIDFILE"))"
++	else
++		echo "ipmi_sim is not running"
++		return 1
++	fi
++}
++
++restart() {
++	stop
++	start
++}
++
++if [ "${1}" = "start" ]
++then
++	start
++elif [ "${1}" = "stop" ]
++then
++	stop
++elif [ "${1}" = "restart" ]
++then
++	restart
++elif [ "${1}" = "status" ]
++then
++	status
++fi
