@@ -1,0 +1,60 @@
+From a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2 Mon Sep 17 00:00:00 2001
+From: builder <builder@localhost.localdomain>
+Date: Tue, 08 Apr 2026 05:00:00 +0000
+Subject: [PATCH] board: add IPMI module loading and LAN configuration helper
+
+---
+ board/cvitek/SG200X/overlay/etc/init.d/S00kmod | 3 +++
+ board/cvitek/SG200X/overlay/usr/sbin/ipmi-setup | 29 +++++++++++++++++++++++++++++
+ 2 files changed, 32 insertions(+)
+ create mode 100755 board/cvitek/SG200X/overlay/usr/sbin/ipmi-setup
+
+--- a/board/cvitek/SG200X/overlay/etc/init.d/S00kmod
++++ b/board/cvitek/SG200X/overlay/etc/init.d/S00kmod
+@@ -25,6 +25,9 @@
+ 	insmod soph_pwm.ko
+ 	insmod soph_saradc.ko
+ #	insmod soph_wiegand.ko # uncomment it if want use wiegand
++	insmod /lib/modules/$(uname -r)/kernel/drivers/char/ipmi/ipmi_msghandler.ko 2>/dev/null || true
++	insmod /lib/modules/$(uname -r)/kernel/drivers/char/ipmi/ipmi_devintf.ko 2>/dev/null || true
++	insmod /lib/modules/$(uname -r)/kernel/drivers/char/ipmi/ipmi_si.ko 2>/dev/null || true
+ 	echo "OK"
+ 	exit 0
+ fi
+diff --git a/board/cvitek/SG200X/overlay/usr/sbin/ipmi-setup b/board/cvitek/SG200X/overlay/usr/sbin/ipmi-setup
+new file mode 100755
+index 0000000..0000002
+--- /dev/null
++++ b/board/cvitek/SG200X/overlay/usr/sbin/ipmi-setup
+@@ -0,0 +1,29 @@
++#!/bin/sh
++#
++# IPMI LAN Configuration Helper
++# Usage: ipmi-setup <ip_address> <netmask> <gateway> [channel]
++#
++
++if [ $# -lt 3 ]; then
++    echo "Usage: $0 <ip_address> <netmask> <gateway> [channel]"
++    echo "Example: $0 192.168.1.100 255.255.255.0 192.168.1.1"
++    exit 1
++fi
++
++IP_ADDR=$1
++NETMASK=$2
++GATEWAY=$3
++CHANNEL=${4:-1}
++
++echo "Configuring IPMI LAN on channel $CHANNEL..."
++
++# Set static IP configuration
++ipmitool lan set $CHANNEL ipsrc static
++ipmitool lan set $CHANNEL ipaddr $IP_ADDR
++ipmitool lan set $CHANNEL netmask $NETMASK
++ipmitool lan set $CHANNEL defgw ipaddr $GATEWAY
++
++# Enable LAN access
++ipmitool lan set $CHANNEL access on
++
++echo "Configuration complete. Verify with: ipmitool lan print $CHANNEL"
+-- 
+2.43.0

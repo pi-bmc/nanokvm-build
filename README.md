@@ -130,3 +130,41 @@ touch xxx
 ./host/make_logo.sh input.jpeg logo.jpeg
 mcopy -i install/xxx/xxx.img@@1s logo.jpeg ::/
 ```
+
+## IPMI over LAN Configuration
+
+The NanoKVM build includes IPMI support for remote management.
+
+### Loading IPMI Modules
+
+IPMI kernel modules are automatically loaded on boot via `/etc/init.d/S10ipmi`.
+
+To manually verify:
+```bash
+ls /dev/ipmi*  # Should show /dev/ipmi0
+```
+
+### Configure IPMI LAN
+
+Use the configuration helper script:
+```bash
+ipmi-setup 192.168.1.100 255.255.255.0 192.168.1.1
+```
+
+Or manually with ipmitool:
+```bash
+ipmitool lan set 1 ipsrc static
+ipmitool lan set 1 ipaddr 192.168.1.100
+ipmitool lan set 1 netmask 255.255.255.0
+ipmitool lan set 1 defgw ipaddr 192.168.1.1
+ipmitool lan set 1 access on
+```
+
+### Remote Access
+
+From a remote machine:
+```bash
+ipmitool -I lanplus -H 192.168.1.100 -U <username> -P <password> chassis status
+```
+
+**Note:** IPMI over LAN requires hardware BMC support. Verify your hardware supports IPMI before configuration.

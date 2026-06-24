@@ -168,9 +168,11 @@ defconfig ${SG_BOARD_LINK}
 cd buildroot
 branchnanokvm=false
 if git checkout -b build ; then
+  [ -e ../host/buildroot-overlay-ipmi.patch ] && git am < ../host/buildroot-overlay-ipmi.patch || true
   rm -f board/cvitek/SG200X/overlay/etc/init.d/uvc-gadget-server.elf
   rm -f board/cvitek/SG200X/overlay/etc/init.d/uvc-gadget-server.tar.xz
   git add board/cvitek/SG200X/overlay/etc/init.d
+  git add board/cvitek/SG200X/overlay/usr/sbin
   git commit -m "build"
 elif git branch -D build-nanokvm ; then
   true
@@ -212,6 +214,7 @@ if [ $nanokvm = y ]; then
   sed -i s/'^BR2_PACKAGE_PARTED=y'/'BR2_PACKAGE_NANOKVM_SG200X=y\nBR2_PACKAGE_PARTED=y'/g configs/${BR_DEFCONFIG}
   sed -i s/'^BR2_PACKAGE_PARTED=y'/'BR2_PACKAGE_OPENIPMI=y\nBR2_PACKAGE_PARTED=y'/g configs/${BR_DEFCONFIG}
   sed -i s/'^BR2_PACKAGE_PARTED=y'/'BR2_PACKAGE_SER2NET=y\nBR2_PACKAGE_PARTED=y'/g configs/${BR_DEFCONFIG}
+  sed -i s/'^BR2_PACKAGE_PARTED=y'/'BR2_PACKAGE_IPMITOOL=y\nBR2_PACKAGE_PARTED=y'/g configs/${BR_DEFCONFIG}
 fi
 if [ $tailscale = y ]; then
   sed -i s/'^BR2_PACKAGE_PARTED=y'/'BR2_PACKAGE_TAILSCALE_RISCV64=y\nBR2_PACKAGE_PARTED=y'/g configs/${BR_DEFCONFIG}
@@ -291,6 +294,7 @@ if git checkout -b build-nanokvm ; then
 fi
 if [ $branchnanokvm = true ]; then
   git add board/cvitek/SG200X/overlay/etc/init.d
+  git add board/cvitek/SG200X/overlay/usr/sbin
   git add configs/${BR_DEFCONFIG}
   git commit -m "build-nanokvm"
 fi

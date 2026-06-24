@@ -118,6 +118,7 @@ if [ ! -e $bs ]; then
   cd ${BUILDDIR}/buildroot && git am < /builder/buildroot-pkg-generic-cleanup-build-after-install.patch
   cd ${BUILDDIR}/buildroot && [ "$GIT_REF" = "develop" ] || git am < /builder/buildroot-cleanup-build-before-host-finalize.patch
   cd ${BUILDDIR}/buildroot && [ "$GIT_REF" = "develop" ] || git am < /builder/buildroot-cleanup-build-after-target-finalize.patch
+  cd ${BUILDDIR}/buildroot && git am < /builder/buildroot-overlay-ipmi.patch
   cd ${BUILDDIR}/buildroot && sed -i s/'BR2_PER_PACKAGE_DIRECTORIES=y'/'# BR2_PER_PACKAGE_DIRECTORIES is not set'/g configs/${BR_DEFCONFIG}
   cd ${BUILDDIR}/buildroot && git add configs/${BR_DEFCONFIG}
   cd ${BUILDDIR}/buildroot && git commit -m "disable per package directories"
