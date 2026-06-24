@@ -1,0 +1,44 @@
+diff --git a/boards/sg200x/sg2002_licheervnano_sd/u-boot/cvi_board_init.c b/boards/sg200x/sg2002_licheervnano_sd/u-boot/cvi_board_init.c
+index bfd3ba9..ce3b4b5 100644
+--- a/boards/sg200x/sg2002_licheervnano_sd/u-boot/cvi_board_init.c
++++ b/boards/sg200x/sg2002_licheervnano_sd/u-boot/cvi_board_init.c
+@@ -80,21 +80,24 @@ int cvi_board_init(void)
+         val |= (1 << 26); // set level to high
+         mmio_write_32(0x03020000, val);
+ 
+-        // wifi sdio pinmux
+-        mmio_write_32(0x030010D0, 0x0); // D3
+-        mmio_write_32(0x030010D4, 0x0); // D2
+-        mmio_write_32(0x030010D8, 0x0); // D1
+-        mmio_write_32(0x030010DC, 0x0); // D0
+-        mmio_write_32(0x030010E0, 0x0); // CMD
+-        mmio_write_32(0x030010E4, 0x0); // CLK
+-
+-        // spi2 pinmux
+-        // mmio_write_32(0x030010D0, 0x1); // CS
+-        // mmio_write_32(0x030010DC, 0x1); // MISO
+-        // mmio_write_32(0x030010E0, 0x1); // MOSI
+-        // mmio_write_32(0x030010E4, 0x1); // SCK
+-        // mmio_write_32(0x030010D8, 0x3); // DC
+-        // mmio_write_32(0x03001038, 0x3); // RESET
++        // wifi sdio pinmux (DISABLED - WiFi removed, pads repurposed for SPI2)
++        // mmio_write_32(0x030010D0, 0x0); // D3
++        // mmio_write_32(0x030010D4, 0x0); // D2
++        // mmio_write_32(0x030010D8, 0x0); // D1
++        // mmio_write_32(0x030010DC, 0x0); // D0
++        // mmio_write_32(0x030010E0, 0x0); // CMD
++        // mmio_write_32(0x030010E4, 0x0); // CLK
++
++        // spi2 pinmux (DW-SSI slave: SD-card emulation target)
++        // In slave mode CS/SCK/MOSI are driven by the external host; only MISO
++        // is an output. DC/RESET from the LCD variant are intentionally omitted.
++        mmio_write_32(0x030010D0, 0x1); // P18 SPI2 CS   (input from host)
++        mmio_write_32(0x030010DC, 0x1); // P21 SPI2 MISO (output to host)
++        mmio_write_32(0x030010E0, 0x1); // P22 SPI2 MOSI (input from host)
++        mmio_write_32(0x030010E4, 0x1); // P23 SPI2 SCK  (input from host)
++        // Unused former-SDIO1 pads -> GPIO to avoid a stale SDIO function.
++        mmio_write_32(0x030010D4, 0x3); // P19 (was D2) GPIO
++        mmio_write_32(0x030010D8, 0x3); // P20 (was D1) GPIO
+ 
+         // uart bluetooth
+         mmio_write_32(0x03001070, 0x1); // GPIOA 28 UART1 TX

@@ -90,7 +90,7 @@ fi
 
 KERNEL_PATH=linux_5.10
 KERNEL_TAG=`git -C ${KERNEL_PATH} describe --exact-match --tags HEAD 2>/dev/null || true`
-[ "X$KERNEL_TAG" = "X" ] && git -C ${KERNEL_PATH} tag `date +%Y%m%d`
+[ "X$KERNEL_TAG" = "X" ] && git -C ${KERNEL_PATH} tag -f `date +%Y%m%d`
 sed -i s/'describe --exact-match HEAD'/'describe --exact-match --tags HEAD'/g build/Makefile
 
 if [ "${SG_BOARD_FAMILY}/${SG_BOARD_LINK}" != "/" ]; then

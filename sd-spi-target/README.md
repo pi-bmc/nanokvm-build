@@ -11,10 +11,11 @@ similar embedded hosts that talk to SD cards over plain SPI (CS/CLK/MOSI/MISO).
 ## What's here (done + verified)
 
 | File | Status |
-|------|--------|
-| `sd_spi_target.c/.h` | SD-SPI **card/target** protocol engine — portable, no deps |
+| --- | --- |
+| `sd_spi_target.c/.h` | SD-SPI **card/target** protocol engine — portable, no deps (compiles native + in-kernel) |
 | `test_host.c` | Native SD-SPI **host** simulator that drives the engine |
 | `Makefile` | `make test` builds and runs the round-trip test |
+| `kernel/spi-dw-sd-slave.c` | Linux driver: DW_apb_ssi in **slave** mode running the engine over its FIFO |
 
 The engine implements the SPI-mode handshake a host issues at mount, then
 single-block read/write:
@@ -50,30 +51,43 @@ The engine is driven one SPI byte at a time:
 `miso = sd_spi_target_step(&t, mosi)`. That maps directly onto an SPI-slave
 RX/TX FIFO — for each byte the host clocks in, you emit the returned byte.
 
-## What's NOT done — SG2002 platform binding (needs the SDK + datasheet)
+## Kernel driver (`kernel/spi-dw-sd-slave.c`)
 
-This is the hardware bring-up that turns the verified engine into a working
-device. It needs the submodules checked out and the CV1800B/SG2002 TRM, so it's
-deliberately left as a documented integration rather than guessed registers:
+A Linux platform driver that programs a DW_apb_ssi instance as a bus **slave**
+and runs the engine in its RX/TX-FIFO ISR. Backing store is a vmalloc'd RAM disk
+staged from user space via a `/dev/sdslaveN` char device:
 
-1. **Confirm SPI-slave capability.** The SG2002 SPI controllers are Synopsys
-   DW_apb_ssi (you can see `SPI2` muxed on P21–P23 in
-   [../best-practice.md](../best-practice.md)). Verify in the TRM that the
-   instance you use supports **slave mode**, its **max slave clock** exceeds your
-   host's SPI rate (3D printers are typically ≤ a few MHz, well within range),
-   and that the RX/TX FIFOs can be DMA-serviced.
-2. **Device tree:** enable that SPI controller in **slave** mode, pinmux CS/CLK/
-   MOSI/MISO to your FPC pins, and *disable* any conflicting function on those
-   pads. (Do this in the board `.dts` via the existing `nanokvm/` overlay flow,
-   not by hand-editing the submodule.)
-3. **HAL glue:** feed each received SPI byte to `sd_spi_target_step()` and push
-   the result to the TX FIFO. Run it on a **dedicated context** (the C906L +
-   FreeRTOS small core is the natural home) or a DMA + tight ISR so it keeps up
-   with back-to-back bytes and the host's chip-select framing.
-4. **Backing store:** implement `sd_blockstore_t.read/write` over a file
-   (`/var/virtual_sd.img`) or a RAM buffer. Mind the same concurrent-access
-   caveat as any shared FAT image: don't mutate it from Linux while the host is
-   mid-transfer.
+```sh
+dd if=disk.img of=/dev/sdslave0    # load the image the host will read
+dd if=/dev/sdslave0 of=out.img     # read back what the host wrote
+```
+
+It does **not** use the master-only `spi-dw` driver or the `SPI_SLAVE` handler
+framework (whose prepared-message model can't do gap-free full-duplex SD
+streaming) — it drives the FIFO directly.
+
+**Wiring (all in the parent repo, submodules stay pristine):**
+
+- `build-nanokvm.sh` copies the driver + engine into `linux_5.10/drivers/spi/`.
+- `../patches/linux_5.10/0001-spi-register-dw-ssi-sd-slave.patch` adds the
+  Kconfig/Makefile entries; `../patches/build/0003` sets `CONFIG_SPI_DW_SD_SLAVE=y`.
+- `../patches/build/0001` (u-boot pinmux) and `0002` (DTS: WiFi off, SPI2 node
+  with `compatible = "cvitek,dw-ssi-sd-slave"`) complete the binding.
+
+### Still required before it works on silicon (NOT yet hardware-validated)
+
+1. **Confirm the SPI2 instance is synthesised slave-capable** in the SG2002 TRM.
+   The generic `SLV_OE`/`SRL` CTRLR0 bits exist, but a given DW_apb_ssi instance
+   can be built master-only — in which case no driver can make it a slave. The
+   driver's `dw_sd_slave_hw_init()` flags exactly where this is assumed.
+2. **Verify register layout + FIFO depth + max slave clock.** The driver assumes
+   the legacy `snps,dw-apb-ssi` CTRLR0 layout and a 32-entry FIFO; confirm both,
+   and that the host's SPI rate is within the slave clock and ISR latency budget
+   (3D printers are typically ≤ a few MHz). Add DMA for higher rates.
+3. **Compile-test in the kernel build** — the driver targets the cvitek 5.10
+   tree but has not been built there yet.
+4. **SPI mode (CPOL/CPHA):** default is mode 0; pass `mode3=1` if your host uses
+   mode 3.
 
 ## Open questions to resolve during bring-up
 

@@ -3,7 +3,9 @@
  * See sd_spi_target.h for the model and limitations.
  */
 #include "sd_spi_target.h"
+#ifndef __KERNEL__
 #include <string.h>
+#endif
 
 /* ---- CRC -------------------------------------------------------------- */
 

@@ -52,18 +52,52 @@ install_overrides() {
   # Rootfs overlay additions (e.g. S99ipmi_sim) — copied into the overlay the
   # base defconfig already points BR2_ROOTFS_OVERLAY at.
   cp -a "${SRC}/overlay/." "buildroot/board/cvitek/SG200X/overlay/"
+  # Custom DW-SSI slave SD-emulation driver + protocol engine into the kernel
+  # tree (a patch wires up Kconfig/Makefile; these are the new sources).
+  install -m 0644 "${TOP}/sd-spi-target/kernel/spi-dw-sd-slave.c" \
+    linux_5.10/drivers/spi/spi-dw-sd-slave.c
+  install -m 0644 "${TOP}/sd-spi-target/sd_spi_target.c" \
+    linux_5.10/drivers/spi/sd_spi_target.c
+  install -m 0644 "${TOP}/sd-spi-target/sd_spi_target.h" \
+    linux_5.10/drivers/spi/sd_spi_target.h
+}
+
+# Apply source patches to the vendor submodules. patches/<submodule>/*.patch maps
+# to `git -C <submodule> apply`. Idempotent: a patch already applied is skipped.
+# Patches live in the parent repo so submodule git history stays pristine.
+apply_patches() {
+  local sub p
+  for sub in build buildroot linux_5.10; do
+    [ -d "${TOP}/patches/${sub}" ] || continue
+    for p in "${TOP}/patches/${sub}"/*.patch; do
+      [ -e "$p" ] || continue
+      if git -C "$sub" apply --reverse --check "$p" 2>/dev/null; then
+        continue   # already applied
+      elif git -C "$sub" apply --check "$p" 2>/dev/null; then
+        git -C "$sub" apply "$p"
+        echo "applied patch: ${sub}/${p##*/}"
+      else
+        echo "ERROR: patch does not apply cleanly: ${sub}/${p##*/}" >&2
+        return 1
+      fi
+    done
+  done
 }
 
 # Restore the vendor submodules to a pristine working tree.
 restore_submodules() {
   git -C build checkout -- \
-    "boards/${SG_BOARD_FAMILY}/${SG_BOARD_LINK}/memmap.py" \
+    "boards/${SG_BOARD_FAMILY}/${SG_BOARD_LINK}" \
     tools/common/sd_tools/genimage_rootless.cfg \
     tools/common/sd_tools/sd_gen_burn_image_rootless.sh 2>/dev/null || true
   git -C buildroot checkout -- \
     configs/cvitek_SG200X_musl_riscv64_defconfig \
     board/cvitek/SG200X/overlay 2>/dev/null || true
   git -C buildroot clean -fdq board/cvitek/SG200X/overlay 2>/dev/null || true
+  git -C linux_5.10 checkout -- drivers/spi/Kconfig drivers/spi/Makefile 2>/dev/null || true
+  rm -f linux_5.10/drivers/spi/spi-dw-sd-slave.c \
+        linux_5.10/drivers/spi/sd_spi_target.c \
+        linux_5.10/drivers/spi/sd_spi_target.h
 }
 trap restore_submodules EXIT
 
@@ -75,6 +109,7 @@ if [ -e prepare-licheesgnano.sh ]; then
 fi
 
 install_overrides
+apply_patches
 
 # ---------------------------------------------------------------------------
 # Buildroot overlay init.d shaping for NanoKVM. These steps act on generated /

@@ -22,8 +22,14 @@
 #ifndef SD_SPI_TARGET_H
 #define SD_SPI_TARGET_H
 
+#ifdef __KERNEL__
+#include <linux/types.h>
+#include <linux/string.h>
+#else
 #include <stdint.h>
 #include <stddef.h>
+#include <string.h>
+#endif
 
 #define SD_BLOCK_SIZE 512u
 
