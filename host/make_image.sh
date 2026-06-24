@@ -14,11 +14,19 @@ if [ "X$GIT_TARGET_HOST" = "X" ]; then
   GIT_TARGET_HOST=$GIT_SOURCE_HOST
 fi
 
+if [ "X$GIT_RELEASES_URL" = "X" ]; then
+  GIT_RELEASES_URL=https://$GIT_TARGET_HOST
+fi
+
 GIT_SOURCE_USER_URL=https://$GIT_SOURCE_HOST/$GIT_SOURCE_USER
 GIT_TARGET_USER_URL=https://$GIT_TARGET_HOST/$GIT_TARGET_USER
 GIT_USER_URL=$GIT_TARGET_USER_URL
 
 [ "X$GIT_REF" = "X" ] && GIT_REF="develop"
+
+if [ "X$TOOLCHAIN_URL_ARM" = "X" ]; then
+  TOOLCHAIN_URL_ARM=$(echo ${TOOLCHAIN_URL} | sed 's|/arm/.*|/arm/gnu|g' | sed 's|/linaro|/arm/gnu|g')
+fi
 
 BUILDDIR="/cvi_mmf_sdk"
 
@@ -106,6 +114,7 @@ if [ ! -e $bs ]; then
     cd ${BUILDDIR} && ./host/replace-all-linaro-toolchains.sh
   fi
   cd ${BUILDDIR} && rm -f host/riscv64-*.tar.*
+  cd ${BUILDDIR}/build && [ "$GIT_REF" = "develop" ] || git am < /builder/0001-build-cleanup-kernel-object-files-after-install.patch
   cd ${BUILDDIR}/buildroot && git am < /builder/buildroot-pkg-generic-cleanup-build-after-install.patch
   cd ${BUILDDIR}/buildroot && [ "$GIT_REF" = "develop" ] || git am < /builder/buildroot-cleanup-build-before-host-finalize.patch
   cd ${BUILDDIR}/buildroot && [ "$GIT_REF" = "develop" ] || git am < /builder/buildroot-cleanup-build-after-target-finalize.patch
@@ -144,10 +153,20 @@ if [ ! -e $bs ]; then
     cd ${BUILDDIR}/buildroot && git add package/rtc-tools/rtc-tools.mk
     cd ${BUILDDIR}/buildroot && git add package/tpudemo-sg200x/tpudemo-sg200x.mk
     cd ${BUILDDIR}/buildroot && git add package/uvc-gadget/uvc-gadget.mk
+    if [ "X${TOOLCHAIN_URL_ARM}" != "X" ]; then
+      cd ${BUILDDIR}/buildroot && sed -i 's|https://developer.arm.com/-/media/Files/downloads/gnu|'${TOOLCHAIN_URL_ARM}'|g' toolchain/toolchain-external/toolchain-external-arm-aarch64/toolchain-external-arm-aarch64.mk
+      cd ${BUILDDIR}/buildroot && sed -i 's|https://developer.arm.com/-/media/Files/downloads/gnu|'${TOOLCHAIN_URL_ARM}'|g' toolchain/toolchain-external/toolchain-external-arm-arm/toolchain-external-arm-arm.mk
+      cd ${BUILDDIR}/buildroot && git add toolchain/toolchain-external/toolchain-external-arm-*/toolchain-external-arm-*.mk
+    fi
     cd ${BUILDDIR}/buildroot && git commit -m "update package urls"
+    cd ${BUILDDIR}/middleware/3rdparty/opencv4.5/opencv && sed -i 's|https://github.com/opencv/ade/archive|'${GIT_RELEASES_URL}'/opencv/ade/archive|g' modules/gapi/cmake/DownloadADE.cmake
+    cd ${BUILDDIR}/middleware/3rdparty/opencv4.5/opencv && sed -i 's|https://github.com/scpcom/ade/archive|'${GIT_RELEASES_URL}'/scpcom/ade/archive|g' modules/gapi/cmake/DownloadADE.cmake
     cd ${BUILDDIR}/tdl_sdk && sed -i 's|GIT_REPOSITORY https://github.com/google/googletest|GIT_REPOSITORY '${GIT_USER_URL}'/googletest|g' cmake/thirdparty.cmake
     cd ${BUILDDIR}/tdl_sdk && sed -i 's|GIT_REPOSITORY https://github.com/nothings/stb|GIT_REPOSITORY '${GIT_USER_URL}'/stb|g' cmake/thirdparty.cmake
     cd ${BUILDDIR}/tdl_sdk && sed -i 's|GIT_REPOSITORY https://gitlab.com/libeigen/eigen|GIT_REPOSITORY '${GIT_USER_URL}'/eigen|g' cmake/thirdparty.cmake
+    cd ${BUILDDIR}/tdl_sdk && sed -i 's|GIT_REPOSITORY https://github.com/nlohmann/json|GIT_REPOSITORY '${GIT_USER_URL}'/json|g' cmake/thirdparty.cmake
+    cd ${BUILDDIR}/tdl_sdk && sed -i 's|GIT_REPOSITORY https://github.com/scpcom/kissfft|GIT_REPOSITORY '${GIT_USER_URL}'/kissfft|g' cmake/thirdparty.cmake
+    cd ${BUILDDIR}/tdl_sdk && sed -i 's|GIT_REPOSITORY https://github.com/scpcom/kaldi-native-fbank|GIT_REPOSITORY '${GIT_USER_URL}'/kaldi-native-fbank|g' cmake/thirdparty.cmake
   fi
   cd ${BUILDDIR}/host-tools && for d in gcc/arm-gnu-toolchain-11.3.rel1-* gcc/gcc-buildroot-9.3.0-* gcc/gcc-linaro-6.3.1-2017.05-* ; do
     [ -e $d ] || continue
@@ -168,6 +187,8 @@ if [ ! -e $bs ]; then
   fi
   cd ${BUILDDIR}/middleware && git am < /builder/middleware-3rdparty-cleanup-build-after-install.patch
   cd ${BUILDDIR}/middleware && git am < /builder/middleware-3rdparty-deinit-submodules-after-install.patch
+  cd ${BUILDDIR}/middleware && [ "$GIT_REF" = "develop" ] || git am < /builder/0001-middleware-3rdparty-cleanup-prebuilt-after-install.patch
+  cd ${BUILDDIR}/middleware && [ "$GIT_REF" = "develop" ] || git am < /builder/0001-middleware-cleanup-object-files-after-install.patch
   cd ${BUILDDIR}/ramdisk && for f in rootfs/common_*/usr/share/fw_vcodec/*.bin ; do
     [ -e $f ] || continue
     d=`dirname $f`
