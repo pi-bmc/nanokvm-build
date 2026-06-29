@@ -7,4 +7,5 @@
 install/*
 cscope.out
 host-tools
-host/*.tar.gz
+.vscode-ctags
+*.tar.gz

@@ -70,6 +70,30 @@ static int wait_token(void)
     return -1;
 }
 
+static void read_data(uint8_t *out, unsigned len)
+{
+    assert(wait_token() == 0);
+    for (unsigned i = 0; i < len; i++) out[i] = xfer(0xFF);
+    uint8_t ch = xfer(0xFF), cl = xfer(0xFF);
+    uint16_t got = (uint16_t)((ch << 8) | cl);
+    assert(got == sd_crc16(out, len));
+}
+
+static void write_data_token(uint8_t token, const uint8_t *data, unsigned len, uint16_t crc)
+{
+    (void)xfer(token);
+    for (unsigned i = 0; i < len; i++) (void)xfer(data[i]);
+    (void)xfer((uint8_t)(crc >> 8));
+    (void)xfer((uint8_t)(crc & 0xFF));
+}
+
+static void wait_not_busy(void)
+{
+    for (int i = 0; i < 32; i++)
+        if (xfer(0xFF) == 0xFF) return;
+    assert(!"card stayed busy");
+}
+
 /* ---- the test ---------------------------------------------------------- */
 int main(void)
 {
@@ -124,6 +148,56 @@ int main(void)
            r, ocr[0], ocr[1], ocr[2], ocr[3], (ocr[0] & 0x40) ? 1 : 0);
     assert(r == 0x00 && (ocr[0] & 0x40));
 
+    /* Linux 5.10 SD-over-SPI enumeration: CID, CSD, SCR, SSR, switch status. */
+    uint8_t cid[16], csd[16], scr[8], ssr[64], sw[64];
+    send_cmd(10, 0);
+    r = read_r1();
+    read_data(cid, sizeof(cid));
+    printf("CMD10 -> R1=0x%02X CID name=%c%c%c%c%c\n",
+           r, cid[3], cid[4], cid[5], cid[6], cid[7]);
+    assert(r == 0x00 && memcmp(&cid[3], "NKVM1", 5) == 0);
+
+    send_cmd(9, 0);
+    r = read_r1();
+    read_data(csd, sizeof(csd));
+    printf("CMD9  -> R1=0x%02X CSD[0]=0x%02X CSD[5]=0x%02X\n", r, csd[0], csd[5]);
+    assert(r == 0x00 && ((csd[0] >> 6) == 1) && ((csd[5] & 0x0F) == 9));
+
+    send_cmd(55, 0);
+    assert(read_r1() == 0x00);
+    send_cmd(51, 0);
+    r = read_r1();
+    read_data(scr, sizeof(scr));
+    printf("ACMD51-> R1=0x%02X SCR=%02X%02X...\n", r, scr[0], scr[1]);
+    assert(r == 0x00 && scr[0] == 0x02 && (scr[1] & 0x0F) == 0x05);
+
+    send_cmd(55, 0);
+    assert(read_r1() == 0x00);
+    send_cmd(13, 0);
+    r = read_r1();
+    assert(xfer(0xFF) == 0x00);       /* R2 second status byte */
+    read_data(ssr, sizeof(ssr));
+    printf("ACMD13-> R1=0x%02X SSR[0]=0x%02X\n", r, ssr[0]);
+    assert(r == 0x00);
+
+    send_cmd(6, 0x00FFFFFF);
+    r = read_r1();
+    read_data(sw, sizeof(sw));
+    printf("CMD6  -> R1=0x%02X default-speed support=0x%02X\n", r, sw[13]);
+    assert(r == 0x00 && (sw[13] & 0x01) && !(sw[13] & 0x02));
+
+    send_cmd(13, 0);
+    r = read_r1();
+    assert(xfer(0xFF) == 0x00);
+    printf("CMD13 -> R1=0x%02X\n", r);
+    assert(r == 0x00);
+
+    /* Linux enables SPI CRC by default after reading the card registers. */
+    send_cmd(59, 1);
+    r = read_r1();
+    printf("CMD59 -> R1=0x%02X (CRC on)\n", r);
+    assert(r == 0x00);
+
     /* CMD24: write block 7 with a known pattern. */
     uint8_t pattern[SD_BLOCK_SIZE];
     for (unsigned i = 0; i < SD_BLOCK_SIZE; i++) pattern[i] = (uint8_t)(i * 7 + 3);
@@ -140,22 +214,59 @@ int main(void)
     printf("CMD24 -> R1=0x%02X data-resp=0x%02X\n", r, dr);
     assert((dr & 0x1F) == 0x05);
     /* wait out busy (card holds MISO 0x00 while programming) */
-    for (int i = 0; i < 16; i++) if (xfer(0xFF) == 0xFF) break;
+    wait_not_busy();
     assert(memcmp(g_disk[7], pattern, SD_BLOCK_SIZE) == 0);
+
+    /* CRC-on write with a bad CRC must be rejected. */
+    send_cmd(24, 6);
+    r = read_r1();
+    assert(r == 0x00);
+    write_data_token(0xFE, pattern, SD_BLOCK_SIZE, 0x1234);
+    dr = xfer(0xFF);
+    printf("CMD24 bad CRC -> data-resp=0x%02X\n", dr);
+    assert((dr & 0x1F) == 0x0B);
+    wait_not_busy();
 
     /* CMD17: read block 7 back and verify data + CRC16. */
     send_cmd(17, 7);
     r = read_r1();
     assert(r == 0x00);
-    assert(wait_token() == 0);
     uint8_t rd[SD_BLOCK_SIZE];
-    for (unsigned i = 0; i < SD_BLOCK_SIZE; i++) rd[i] = xfer(0xFF);
-    uint8_t ch = xfer(0xFF), cl = xfer(0xFF);
-    uint16_t rcrc = (uint16_t)((ch << 8) | cl);
-    printf("CMD17 -> R1=0x%02X data CRC16=0x%04X (calc 0x%04X)\n",
-           r, rcrc, sd_crc16(rd, SD_BLOCK_SIZE));
+    read_data(rd, sizeof(rd));
+    printf("CMD17 -> R1=0x%02X data verified\n", r);
     assert(memcmp(rd, pattern, SD_BLOCK_SIZE) == 0);
-    assert(rcrc == sd_crc16(rd, SD_BLOCK_SIZE));
+
+    /* CMD25/CMD18: Linux block I/O uses multi-block transfers. */
+    uint8_t pattern2[SD_BLOCK_SIZE];
+    for (unsigned i = 0; i < SD_BLOCK_SIZE; i++) pattern2[i] = (uint8_t)(255 - i);
+
+    send_cmd(25, 8);
+    r = read_r1();
+    assert(r == 0x00);
+    write_data_token(0xFC, pattern, SD_BLOCK_SIZE, sd_crc16(pattern, SD_BLOCK_SIZE));
+    dr = xfer(0xFF);
+    assert((dr & 0x1F) == 0x05);
+    wait_not_busy();
+    write_data_token(0xFC, pattern2, SD_BLOCK_SIZE, sd_crc16(pattern2, SD_BLOCK_SIZE));
+    dr = xfer(0xFF);
+    assert((dr & 0x1F) == 0x05);
+    wait_not_busy();
+    (void)xfer(0xFD);                 /* multi-write stop token */
+    clocks(2);
+    assert(memcmp(g_disk[8], pattern, SD_BLOCK_SIZE) == 0);
+    assert(memcmp(g_disk[9], pattern2, SD_BLOCK_SIZE) == 0);
+
+    send_cmd(18, 8);
+    r = read_r1();
+    assert(r == 0x00);
+    read_data(rd, sizeof(rd));
+    assert(memcmp(rd, pattern, SD_BLOCK_SIZE) == 0);
+    read_data(rd, sizeof(rd));
+    assert(memcmp(rd, pattern2, SD_BLOCK_SIZE) == 0);
+    send_cmd(12, 0);
+    r = read_r1();
+    printf("CMD18 -> CMD12 R1=0x%02X after two blocks\n", r);
+    assert(r == 0x00);
 
     /* Unknown command -> illegal-command bit set. */
     send_cmd(1, 0);

@@ -15,8 +15,6 @@
  * Scope / limitations:
  *   - SPI mode only. This does NOT and CANNOT emulate native 1-bit/4-bit SD
  *     mode (see README.md - the SG2002 has no SD-target hardware for that).
- *   - Single-block read (CMD17) and write (CMD24). Multi-block (CMD18/CMD25)
- *     is not implemented (most simple hosts use single-block).
  *   - Presents as an SDHC (block-addressed) card.
  */
 #ifndef SD_SPI_TARGET_H
@@ -32,6 +30,7 @@
 #endif
 
 #define SD_BLOCK_SIZE 512u
+#define SD_SPI_TX_SIZE (16u + SD_BLOCK_SIZE)
 
 /*
  * Backing store for the emulated card. block is a 0-based 512-byte block index
@@ -50,6 +49,7 @@ typedef enum {
     SD_ST_RESP,       /* streaming a queued response / read-data buffer    */
     SD_ST_RECV_TOKEN, /* CMD24: waiting for the 0xFE data start token      */
     SD_ST_RECV_DATA,  /* CMD24: absorbing 512 data bytes + 2 CRC bytes     */
+    SD_ST_MULTI_READ, /* CMD18: issuing blocks until CMD12 stops the read  */
 } sd_state_t;
 
 typedef struct {
@@ -62,7 +62,7 @@ typedef struct {
     uint8_t  cmd_len;
 
     /* transmit buffer (response bytes / read data block) */
-    uint8_t  tx[8 + SD_BLOCK_SIZE];
+    uint8_t  tx[SD_SPI_TX_SIZE];
     uint16_t tx_len;
     uint16_t tx_pos;
 
@@ -70,11 +70,14 @@ typedef struct {
     uint8_t  rx[SD_BLOCK_SIZE + 2];
     uint16_t rx_pos;
     uint32_t write_block;       /* target block for the in-flight CMD24 */
+    uint32_t read_block;        /* next block for an in-flight CMD18 */
 
     /* card state */
     uint8_t  app_cmd;           /* set by CMD55: next ACMDxx is an app command */
     uint8_t  ready;             /* cleared while idle, set after ACMD41 completes */
     uint8_t  acmd41_seen;       /* used to return idle once, then ready */
+    uint8_t  crc_enabled;       /* CMD59-controlled command/data CRC checking */
+    uint8_t  write_multi;       /* CMD25 token parser active */
 } sd_spi_target_t;
 
 /* Initialise the engine against a backing store. */
