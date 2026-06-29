@@ -1,0 +1,34 @@
+# kas configuration variant that uses the T-Head vendor cross-compiler
+# instead of letting Yocto build its own RISC-V GCC.
+#
+# Usage:
+#   pip3 install kas
+#   ./prepare-licheesgnano.sh   # downloads host-tools/gcc/ if not present
+#   kas build kas-external-tc.yml
+#
+# This is equivalent to the Buildroot settings:
+#   BR2_TOOLCHAIN_EXTERNAL=y
+#   BR2_TOOLCHAIN_EXTERNAL_CUSTOM_PREFIX="riscv64-unknown-linux-musl"
+#   BR2_TOOLCHAIN_EXTERNAL_GCC_10=y
+
+header:
+  version: 14
+  includes:
+    - kas.yml   # inherits all layers and base local_conf from kas.yml
+
+repos:
+  meta-external-toolchain:
+    url: https://github.com/siemens/meta-external-toolchain
+    branch: master
+    layers:
+      .:
+
+local_conf_header:
+  external-toolchain: |
+    # Activate the T-Head external toolchain.
+    # sg2002-external-toolchain.inc sets TCMODE, EXTERNAL_TOOLCHAIN, and
+    # EXTERNAL_TOOLCHAIN_PREFIX; the machine conf includes it when this is set.
+    MACHINE_FEATURES:append = " external-toolchain"
+    require ${LAYERDIR_sophgo}/conf/machine/include/sg2002-external-toolchain.inc
+    # Path to the pre-built toolchain (prepare-licheesgnano.sh downloads here).
+    EXTERNAL_TOOLCHAIN = "${TOPDIR}/../host-tools/gcc"

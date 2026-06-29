@@ -2,9 +2,9 @@ SUMMARY = "U-Boot for Sophgo SG200X (SG2002) — LicheeRV Nano"
 LICENSE = "GPL-2.0-or-later"
 LIC_FILES_CHKSUM = "file://Licenses/README;md5=5a7450c57ffe5ae63fd732446b988025"
 
-inherit uboot-sign deploy
+require recipes-bsp/u-boot/u-boot.inc
 
-DEPENDS += "bc-native dtc-native python3-setuptools-native"
+DEPENDS += "bc-native dtc-native"
 
 SRC_URI = "git://github.com/scpcom/u-boot;branch=licheervnano-cvisdk-2021.10;protocol=https"
 
