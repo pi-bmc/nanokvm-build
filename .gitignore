@@ -9,3 +9,12 @@ cscope.out
 host-tools
 .vscode-ctags
 *.tar.gz
+
+# Yocto build artifacts
+build-yocto/
+yocto-layers/
+downloads/
+sstate-cache/
+*.img
+*.wic
+*.wic.xz

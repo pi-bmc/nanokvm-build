@@ -1,0 +1,28 @@
+# NanoKVM SD card partition layout for Sophgo SG2002 / LicheeRV Nano
+#
+# Partition map (MBR):
+#   Part 1: FAT16, 80 MB  — fip.bin (OpenSBI+U-Boot FIT), boot.sd (kernel+DTB),
+#                            plus NanoKVM runtime config files copied by nanokvm-image.
+#   Part 2: ext4, 1600 MB — root filesystem
+#
+# U-Boot expects fip.bin and boot.sd in the FAT partition. The ROM/FSBL loads
+# fip.bin from a fixed layout; U-Boot then reads the kernel from boot.sd.
+
+bootloader --ptable msdos
+
+# Boot partition: FAT16, active, aligned to 1 MiB, 80 MiB
+part /boot --source bootimg-partition \
+    --ondisk mmcblk \
+    --fstype fat16 \
+    --label BOOT \
+    --active \
+    --align 1024 \
+    --size 81920K
+
+# Root filesystem: ext4
+part / --source rootfs \
+    --ondisk mmcblk \
+    --fstype ext4 \
+    --label rootfs \
+    --align 1024 \
+    --size 1638400K

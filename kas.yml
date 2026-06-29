@@ -1,0 +1,70 @@
+# kas configuration for NanoKVM Yocto build
+# Usage: kas build kas.yml
+# Install kas: pip3 install kas
+
+header:
+  version: 14
+
+machine: sg2002-licheervnano
+distro: nanokvm
+target: nanokvm-image
+
+build_system: openembedded
+
+repos:
+  poky:
+    url: https://git.yoctoproject.org/poky
+    branch: scarthgap
+    layers:
+      meta:
+      meta-poky:
+      meta-yocto-bsp:
+
+  meta-openembedded:
+    url: https://git.openembedded.org/meta-openembedded
+    branch: scarthgap
+    layers:
+      meta-oe:
+      meta-networking:
+      meta-python:
+      meta-filesystems:
+
+  meta-riscv:
+    url: https://github.com/riscv/meta-riscv
+    branch: scarthgap
+    layers:
+      .:
+
+  # Local layers (inside this repo, no git fetch needed)
+  meta-sophgo:
+    path: meta-sophgo
+    layers:
+      .:
+
+  meta-sophgo-sdk:
+    path: meta-sophgo-sdk
+    layers:
+      .:
+
+  meta-nanokvm:
+    path: meta-nanokvm
+    layers:
+      .:
+
+local_conf_header:
+  nanokvm: |
+    # NanoKVM build configuration
+    MACHINE = "sg2002-licheervnano"
+    DISTRO = "nanokvm"
+    # Use musl libc to match the original Buildroot build
+    TCLIBC = "musl"
+    # Parallel build tuning
+    BB_NUMBER_THREADS = "${@oe.utils.cpu_count()}"
+    PARALLEL_MAKE = "-j ${@oe.utils.cpu_count()}"
+    # Shared download and sstate directories (can be overridden per user)
+    DL_DIR = "${TOPDIR}/../downloads"
+    SSTATE_DIR = "${TOPDIR}/../sstate-cache"
+    # Accept commercial licenses needed by some multimedia components
+    LICENSE_FLAGS_ACCEPTED = "commercial"
+    # Disable interactive prompts
+    CONNECTIVITY_CHECK_URIS = ""
