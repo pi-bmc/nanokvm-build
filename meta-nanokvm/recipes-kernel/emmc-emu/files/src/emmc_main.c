@@ -449,9 +449,9 @@ static struct platform_driver emmc_driver = {
  * by name. If you instead add a "nanokvm,emmc-emu" DT node, set
  * emmc_self_device=0 to avoid a duplicate instance.
  *
- * NOTE: regardless of which path you use, the wifisd@4320000 SDIO1 *host*
- * controller should be disabled in the device tree so it does not drive these
- * pads. See README.md.
+ * NOTE: the wifisd@4320000 SDIO1 *host* controller is disabled in the device
+ * tree by the linux-sophgo bbappend (and the WiFi stack is removed from the
+ * image), so nothing else drives these pads. See README.md.
  */
 static bool emmc_self_device = true;
 module_param(emmc_self_device, bool, 0444);

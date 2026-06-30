@@ -10,9 +10,10 @@
  *   - set the initial directions: CLK + CMD + DAT as inputs (the host owns
  *     them at reset; we only ever drive CMD/DAT inside a response/data window).
  *
- * Pre-condition: the wifisd@4320000 SDIO1 *host* controller must be disabled in
- * the device tree (status="disabled") so the cvitek sdhci driver never probes
- * it and never fights us for these pads. See emmc-emu-overlay.dts.
+ * Pre-condition: the wifisd@4320000 SDIO1 *host* controller is disabled in the
+ * device tree (status="disabled", done automatically by the linux-sophgo
+ * bbappend) so the cvitek sdhci driver never probes it and never fights us for
+ * these pads. See README.md / emmc-emu.dts.
  */
 #include <linux/io.h>
 #include <linux/delay.h>

@@ -52,6 +52,21 @@ do_configure:append:sg2002-licheervnano() {
     if ! grep -q '^CONFIG_ARCH_CV181X_ASIC=y' "${cfg}"; then
         echo "CONFIG_ARCH_CV181X_ASIC=y" >> "${cfg}"
     fi
+
+    # Reclaim the SDIO1 pads for the eMMC emulator (recipes-kernel/emmc-emu):
+    # disable the SDIO1 WiFi *host* controller so the cvitek sdhci driver never
+    # probes wifisd@4320000 and never power-sequences or re-muxes those pads.
+    # Appending a label override is robust across the AUTOREV kernel SRCREV.
+    dts="${S}/arch/riscv/boot/dts/cvitek/sg2002_licheervnano_sd.dts"
+    if [ -f "${dts}" ] && ! grep -q 'emmc-emu pad reclaim' "${dts}"; then
+        cat >> "${dts}" <<'EOF'
+
+/* emmc-emu pad reclaim: SDIO1 WiFi host disabled, pads driven by emmc_emu */
+&wifisd {
+	status = "disabled";
+};
+EOF
+    fi
 }
 
 # Build the cvitek-style FIT boot image (boot.sd) and deploy it so wic can place

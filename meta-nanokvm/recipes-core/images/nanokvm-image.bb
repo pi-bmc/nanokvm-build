@@ -3,13 +3,11 @@ LICENSE = "MIT"
 
 inherit core-image
 
-# core-image's default base install includes packagegroup-base-extended, which
-# unconditionally RDEPENDS packagegroup-base-wifi -> wireless-regdb-static. That
-# conflicts with the full wireless-regdb this image ships and would also drag in
-# wireless kernel modules. Use the plain packagegroup-base instead: it pulls the
-# wifi/bluetooth subgroups only when MACHINE_FEATURES advertises them (it does
-# not here), so the WiFi interface is provided purely by the explicit userspace
-# below (wpa-supplicant, hostapd, iw + wireless-regdb) with no wireless modules.
+# Use the plain packagegroup-base (not -extended): -extended unconditionally
+# RDEPENDS packagegroup-base-wifi -> wireless-regdb-static and would drag in
+# wireless kernel modules. WiFi is intentionally absent from this image (the
+# SDIO1 WiFi function is repurposed by the eMMC emulator), so packagegroup-base
+# pulls the wifi subgroup only when MACHINE_FEATURES advertises it -- it does not.
 CORE_IMAGE_BASE_INSTALL = "packagegroup-core-boot packagegroup-base"
 
 # --- Features ---
@@ -52,8 +50,6 @@ IMAGE_INSTALL:append = " \
     ethtool \
     iproute2 \
     iputils \
-    iw \
-    wireless-regdb \
     ipmitool \
     iperf3 \
     mtr \
@@ -70,10 +66,10 @@ IMAGE_INSTALL:append = " \
     "
 
 # --- WiFi ---
-IMAGE_INSTALL:append = " \
-    wpa-supplicant \
-    hostapd \
-    "
+# Intentionally none. The SDIO1 WiFi function is repurposed by the eMMC
+# emulator (recipes-kernel/emmc-emu), so no wifi driver, stack, or userspace is
+# installed (no wpa-supplicant/hostapd/iw/wireless-regdb; CFG80211/AIC_WLAN off
+# in the kernel defconfig; the wifisd DT node is disabled by the linux bbappend).
 
 # --- VPN / firewall ---
 IMAGE_INSTALL:append = " \
@@ -92,9 +88,8 @@ IMAGE_INSTALL:append = " \
     "
 
 # --- Bluetooth ---
-IMAGE_INSTALL:append = " \
-    bluez5 \
-    "
+# Intentionally none. Bluetooth is removed (CONFIG_BT off in the kernel
+# defconfig, no bluez5, no `bluetooth` DISTRO_FEATURE).
 
 # --- Compression ---
 IMAGE_INSTALL:append = " \

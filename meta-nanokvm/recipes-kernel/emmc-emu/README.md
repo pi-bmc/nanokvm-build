@@ -24,14 +24,15 @@ This replaces the SDIO1 **WiFi** function on those pads.
 
 ## How it works
 
-```
-  Raspberry Pi (HOST, U-Boot)                 NanoKVM SG2002 (this driver)
-  ┌───────────────────────┐                   ┌──────────────────────────────┐
-  │ bcm2835/iproc SDHCI    │   CLK ───────────▶│ porte gpio23  (sampled)      │
-  │  drives CLK @ 400 kHz  │   CMD ◀──────────▶│ porte gpio22  (bit-banged)   │
-  │  sends CMD0/1/2/3/9/7  │   DAT0 ◀─────────▶│ porte gpio21  (bit-banged)   │
-  │  expects R1/R2/R3      │   DAT1..3 ────────│ porte gpio20..18             │
-  └───────────────────────┘                   └──────────────────────────────┘
+```mermaid
+flowchart LR
+    HOST["<b>Raspberry Pi (HOST, U-Boot)</b><br/>bcm2835/iproc SDHCI<br/>drives CLK @ 400 kHz<br/>sends CMD0/1/2/3/9/7<br/>expects R1/R2/R3"]
+    DEV["<b>NanoKVM SG2002 (this driver)</b><br/>software card side, bit-banged<br/>from a real-time kthread"]
+
+    HOST -->|"CLK → porte gpio23 (sampled)"| DEV
+    HOST <-->|"CMD ↔ porte gpio22 (bit-banged)"| DEV
+    HOST <-->|"DAT0 ↔ porte gpio21 (bit-banged)"| DEV
+    HOST ---|"DAT1..3 — porte gpio20..18"| DEV
 ```
 
 Five translation units:
@@ -107,11 +108,20 @@ Add to your image (e.g. `meta-nanokvm/recipes-core/images/nanokvm-image.bb`):
 IMAGE_INSTALL:append = " kernel-module-emmc-emu emmc-emud"
 ```
 
-**Required device-tree change:** disable the SDIO1 host controller so it does
-not power-sequence or re-mux these pads. In
-`arch/riscv/boot/dts/cvitek/sg2002_licheervnano_sd.dts` set the `wifisd`
-node `status = "disabled";` (see `emmc-emu.dts` for the overlay form). The
-emulator self-instantiates from module init, so no emulator DT node is needed.
+**WiFi removal (already wired into the build):** the SDIO1 WiFi function is
+removed from the image so nothing contends for these pads, and the SDIO1 host
+controller is disabled so the cvitek sdhci driver never power-sequences or
+re-muxes them:
+
+- `linux-sophgo_%.bbappend` appends `&wifisd { status = "disabled"; };` to the
+  board DTS at configure time (no manual edit needed).
+- the kernel defconfig has `CFG80211`, `AIC_WLAN_SUPPORT`, `USB_NET_RNDIS_WLAN`
+  turned off; the distro drops the `wifi` feature; the image drops
+  `wpa-supplicant`/`hostapd`/`iw`/`wireless-regdb`; U-Boot drops
+  `CONFIG_CP_EXT_WIRELESS`.
+
+The emulator self-instantiates from module init, so no emulator DT node is
+needed (`emmc-emu.dts` is provided only as a runtime-overlay alternative).
 
 Module parameters (`/etc/modprobe.d/emmc-emu.conf` or insmod args):
 
