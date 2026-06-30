@@ -13,8 +13,8 @@ permissions:
   packages: write
 
 # Serialize builds of the same ref so two runs don't clobber each other's
-# cache push. Different refs may run concurrently and share the same cache
-# tags — sstate is content-addressed, so sharing is safe and additive.
+# cache push. Within a single run, the jobs below are structured to avoid
+# concurrent writes to the same OCI tag.
 concurrency:
   group: yocto-build-${{ github.ref }}
   cancel-in-progress: false
@@ -34,17 +34,19 @@ env:
   # survives a cancellation that interrupts the final save.
   CACHE_CHECKPOINT_INTERVAL_SECONDS: "1200"
 
-jobs:
-  yocto-build:
-    # Strongly recommended to use your own powerful hardware
-    runs-on: ubuntu-latest
+# ── Shared setup steps (repeated per job — GHA composite actions can't use
+#    third-party `uses:` or access secrets directly, so we duplicate).       ──
 
+jobs:
+  # ── Stage 1: Cross-toolchain ─────────────────────────────────────────────────
+  # Builds the musl cross-compiler and sysroot. All stage-2 jobs depend on its
+  # sstate so they skip this expensive step on cache hits.
+  toolchain:
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
 
-      # Yocto tmp + a multi-GB restored cache will not fit in the default
-      # ubuntu-latest free space; reclaim ~30 GB before building.
       - name: Free up disk space
         uses: jlumbroso/free-disk-space@main
         with:
@@ -68,14 +70,11 @@ jobs:
       - name: Set up oras
         uses: oras-project/setup-oras@v1
 
-      # Cache auth/push only works with a write-capable token (push events and
-      # same-repo runs). Fork PRs get a read-only token, so they build without
-      # the OCI cache instead of failing.
       - name: Log in to GHCR
         if: env.CACHE_ENABLED == 'true'
         run: echo "${{ secrets.GITHUB_TOKEN }}" | oras login ghcr.io -u ${{ github.actor }} --password-stdin
 
-      - name: Create cache and download directories
+      - name: Create cache directories
         run: mkdir -p "$DL_DIR" "$SSTATE_DIR"
 
       - name: Restore Yocto OCI caches
@@ -83,33 +82,287 @@ jobs:
         continue-on-error: true
         run: bash "${GITHUB_WORKSPACE}/.github/scripts/yocto-cache.sh" restore sstate downloads
 
-      - name: Run kas Build
+      - name: Build cross-toolchain
         run: |
           set -uo pipefail
           checkpoint_pid=""
           if [ "${CACHE_ENABLED}" = "true" ]; then
-            # Periodically push sstate to the registry while the build runs, so
-            # that cancelling the workflow still preserves progress even if the
-            # final "Save" step is cut short by the cancellation grace period.
-            (
-              while sleep "${CACHE_CHECKPOINT_INTERVAL_SECONDS}"; do
-                bash "${GITHUB_WORKSPACE}/.github/scripts/yocto-cache.sh" save sstate || true
-              done
-            ) &
+            (while sleep "${CACHE_CHECKPOINT_INTERVAL_SECONDS}"; do
+               bash "${GITHUB_WORKSPACE}/.github/scripts/yocto-cache.sh" save sstate || true
+             done) &
             checkpoint_pid=$!
-            # Stop the checkpoint loop whenever this step exits (incl. cancel).
             trap '[ -n "${checkpoint_pid}" ] && kill "${checkpoint_pid}" 2>/dev/null || true' EXIT INT TERM
           fi
+          kas shell kas.yml -- bitbake virtual/cross-cc
 
-          kas build kas.yml
-
-      # Runs on success, failure, AND cancellation (always()), pushing the full
-      # sstate + downloads so the next run resumes from the latest progress.
       - name: Save Yocto OCI caches
         if: ${{ always() && env.CACHE_ENABLED == 'true' }}
         run: bash "${GITHUB_WORKSPACE}/.github/scripts/yocto-cache.sh" save sstate downloads
 
-      # Publish the produced SD card image + bootloader artifacts for download.
+  # ── Stage 2a: Linux kernel ───────────────────────────────────────────────────
+  # Runs in parallel with bootloader and packages once the toolchain sstate is
+  # available. Saves to :sstate-kernel so the image job can merge it in.
+  kernel:
+    needs: [toolchain]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Free up disk space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
+
+      - name: Cache and install build dependencies
+        uses: awalsh128/cache-apt-pkgs-action@latest
+        with:
+          packages: build-essential git bison flex bc libssl-dev libgnutls28-dev device-tree-compiler kas chrpath diffstat zstd
+          version: 1.0
+
+      - name: Disable AppArmor unprivileged user namespace restriction
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      - name: Set up oras
+        uses: oras-project/setup-oras@v1
+
+      - name: Log in to GHCR
+        if: env.CACHE_ENABLED == 'true'
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | oras login ghcr.io -u ${{ github.actor }} --password-stdin
+
+      - name: Create cache directories
+        run: mkdir -p "$DL_DIR" "$SSTATE_DIR"
+
+      - name: Restore Yocto OCI caches
+        if: env.CACHE_ENABLED == 'true'
+        continue-on-error: true
+        run: bash "${GITHUB_WORKSPACE}/.github/scripts/yocto-cache.sh" restore sstate downloads
+
+      - name: Build Linux kernel
+        run: |
+          set -uo pipefail
+          checkpoint_pid=""
+          if [ "${CACHE_ENABLED}" = "true" ]; then
+            (while sleep "${CACHE_CHECKPOINT_INTERVAL_SECONDS}"; do
+               bash "${GITHUB_WORKSPACE}/.github/scripts/yocto-cache.sh" save sstate-kernel || true
+             done) &
+            checkpoint_pid=$!
+            trap '[ -n "${checkpoint_pid}" ] && kill "${checkpoint_pid}" 2>/dev/null || true' EXIT INT TERM
+          fi
+          kas shell kas.yml -- bitbake linux-sophgo
+
+      - name: Save Yocto OCI caches
+        if: ${{ always() && env.CACHE_ENABLED == 'true' }}
+        run: bash "${GITHUB_WORKSPACE}/.github/scripts/yocto-cache.sh" save sstate-kernel downloads-kernel
+
+  # ── Stage 2b: Bootloader ─────────────────────────────────────────────────────
+  # Builds u-boot-sophgo (which produces fip.bin / boot.sd via the recipe's
+  # deploy tasks). Saves to :sstate-bootloader.
+  bootloader:
+    needs: [toolchain]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Free up disk space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
+
+      - name: Cache and install build dependencies
+        uses: awalsh128/cache-apt-pkgs-action@latest
+        with:
+          packages: build-essential git bison flex bc libssl-dev libgnutls28-dev device-tree-compiler kas chrpath diffstat zstd
+          version: 1.0
+
+      - name: Disable AppArmor unprivileged user namespace restriction
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      - name: Set up oras
+        uses: oras-project/setup-oras@v1
+
+      - name: Log in to GHCR
+        if: env.CACHE_ENABLED == 'true'
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | oras login ghcr.io -u ${{ github.actor }} --password-stdin
+
+      - name: Create cache directories
+        run: mkdir -p "$DL_DIR" "$SSTATE_DIR"
+
+      - name: Restore Yocto OCI caches
+        if: env.CACHE_ENABLED == 'true'
+        continue-on-error: true
+        run: bash "${GITHUB_WORKSPACE}/.github/scripts/yocto-cache.sh" restore sstate downloads
+
+      - name: Build bootloader (u-boot + FIP)
+        run: |
+          set -uo pipefail
+          checkpoint_pid=""
+          if [ "${CACHE_ENABLED}" = "true" ]; then
+            (while sleep "${CACHE_CHECKPOINT_INTERVAL_SECONDS}"; do
+               bash "${GITHUB_WORKSPACE}/.github/scripts/yocto-cache.sh" save sstate-bootloader || true
+             done) &
+            checkpoint_pid=$!
+            trap '[ -n "${checkpoint_pid}" ] && kill "${checkpoint_pid}" 2>/dev/null || true' EXIT INT TERM
+          fi
+          kas shell kas.yml -- bitbake u-boot-sophgo
+
+      - name: Save Yocto OCI caches
+        if: ${{ always() && env.CACHE_ENABLED == 'true' }}
+        run: bash "${GITHUB_WORKSPACE}/.github/scripts/yocto-cache.sh" save sstate-bootloader downloads-bootloader
+
+  # ── Stage 2c: Userspace packages ─────────────────────────────────────────────
+  # Builds all NanoKVM application and BSP packages without assembling the final
+  # image. Saves to :sstate-packages.
+  packages:
+    needs: [toolchain]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Free up disk space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
+
+      - name: Cache and install build dependencies
+        uses: awalsh128/cache-apt-pkgs-action@latest
+        with:
+          packages: build-essential git bison flex bc libssl-dev libgnutls28-dev device-tree-compiler kas chrpath diffstat zstd
+          version: 1.0
+
+      - name: Disable AppArmor unprivileged user namespace restriction
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      - name: Set up oras
+        uses: oras-project/setup-oras@v1
+
+      - name: Log in to GHCR
+        if: env.CACHE_ENABLED == 'true'
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | oras login ghcr.io -u ${{ github.actor }} --password-stdin
+
+      - name: Create cache directories
+        run: mkdir -p "$DL_DIR" "$SSTATE_DIR"
+
+      - name: Restore Yocto OCI caches
+        if: env.CACHE_ENABLED == 'true'
+        continue-on-error: true
+        run: bash "${GITHUB_WORKSPACE}/.github/scripts/yocto-cache.sh" restore sstate downloads
+
+      - name: Build userspace packages
+        run: |
+          set -uo pipefail
+          checkpoint_pid=""
+          if [ "${CACHE_ENABLED}" = "true" ]; then
+            (while sleep "${CACHE_CHECKPOINT_INTERVAL_SECONDS}"; do
+               bash "${GITHUB_WORKSPACE}/.github/scripts/yocto-cache.sh" save sstate-packages || true
+             done) &
+            checkpoint_pid=$!
+            trap '[ -n "${checkpoint_pid}" ] && kill "${checkpoint_pid}" 2>/dev/null || true' EXIT INT TERM
+          fi
+          kas shell kas.yml -- bitbake \
+            nanokvm-server \
+            ipmi-sim input-event-daemon ssdp-responder uvc-gadget \
+            cvi-pinmux sg2002-codec-firmware sophgo-middleware cvi-rtsp axp2101
+
+      - name: Save Yocto OCI caches
+        if: ${{ always() && env.CACHE_ENABLED == 'true' }}
+        run: bash "${GITHUB_WORKSPACE}/.github/scripts/yocto-cache.sh" save sstate-packages downloads-packages
+
+  # ── Stage 3: Final image ──────────────────────────────────────────────────────
+  # Merges all per-layer sstate caches and assembles the final WIC image.
+  # On a warm cache almost all tasks are sstate hits; only image rootfs assembly
+  # and WIC creation run live.  Saves a merged :sstate back so the next run's
+  # toolchain job restores the full picture in one shot.
+  image:
+    needs: [kernel, bootloader, packages]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Free up disk space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
+
+      - name: Cache and install build dependencies
+        uses: awalsh128/cache-apt-pkgs-action@latest
+        with:
+          packages: build-essential git bison flex bc libssl-dev libgnutls28-dev device-tree-compiler kas chrpath diffstat zstd
+          version: 1.0
+
+      - name: Disable AppArmor unprivileged user namespace restriction
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      - name: Set up oras
+        uses: oras-project/setup-oras@v1
+
+      - name: Log in to GHCR
+        if: env.CACHE_ENABLED == 'true'
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | oras login ghcr.io -u ${{ github.actor }} --password-stdin
+
+      - name: Create cache directories
+        run: mkdir -p "$DL_DIR" "$SSTATE_DIR"
+
+      - name: Restore all Yocto OCI caches
+        if: env.CACHE_ENABLED == 'true'
+        continue-on-error: true
+        # Restore base sstate first, then merge each per-layer tag on top.
+        # Successive tar extractions into the same SSTATE_DIR are safe: files
+        # with the same content-addressed name are overwritten identically and
+        # new files accumulate, giving the union of all layers' sstate.
+        run: |
+          bash "${GITHUB_WORKSPACE}/.github/scripts/yocto-cache.sh" restore \
+            sstate              downloads \
+            sstate-kernel       downloads-kernel \
+            sstate-bootloader   downloads-bootloader \
+            sstate-packages     downloads-packages
+
+      - name: Build final image
+        run: |
+          set -uo pipefail
+          checkpoint_pid=""
+          if [ "${CACHE_ENABLED}" = "true" ]; then
+            (while sleep "${CACHE_CHECKPOINT_INTERVAL_SECONDS}"; do
+               bash "${GITHUB_WORKSPACE}/.github/scripts/yocto-cache.sh" save sstate || true
+             done) &
+            checkpoint_pid=$!
+            trap '[ -n "${checkpoint_pid}" ] && kill "${checkpoint_pid}" 2>/dev/null || true' EXIT INT TERM
+          fi
+          kas build kas.yml
+
+      # Save the fully merged sstate back to :sstate so future runs' toolchain
+      # job restores a complete cache in a single pull.
+      - name: Save merged Yocto OCI caches
+        if: ${{ always() && env.CACHE_ENABLED == 'true' }}
+        run: bash "${GITHUB_WORKSPACE}/.github/scripts/yocto-cache.sh" save sstate downloads
+
       - name: Upload image artifacts
         if: success()
         uses: actions/upload-artifact@v4

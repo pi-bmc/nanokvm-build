@@ -112,15 +112,18 @@ do_compile() {
     install -m 0755 "${WORKDIR}/xxd-shim" "${WORKDIR}/pybin/xxd"
     export PATH="${WORKDIR}/pybin:${THEAD_TC_DIR}/bin:${PATH}"
 
-    # Build only the middleware libraries (modules/). The top-level `module`
-    # target would also pull in 3rdparty/ (opencv, ffmpeg, ... already provided
-    # by OE) and sample/ demo apps, which the image does not need.
+    # Build the middleware libraries (modules/) and the ISP sensor libraries
+    # (component/isp -> libsns_full + per-sensor libs, needed by cvi_common.pc).
+    # Skip the top-level `all`/`module`/`sample` targets: those also build
+    # 3rdparty/ (opencv, ffmpeg, ... already provided by OE) and sample/ demo
+    # apps the image does not need.
     oe_runmake -C ${S} ${CVI_MW_OEMAKE} prepare
     oe_runmake -C ${S}/modules ${CVI_MW_OEMAKE}
+    oe_runmake -C ${S} ${CVI_MW_OEMAKE} component
 }
 
 do_install() {
-    # Middleware shared libraries + their 3rd-party deps.
+    # Runtime shared libraries + their 3rd-party deps into the rootfs.
     install -d ${D}${libdir}/3rd
     find ${S}/lib -maxdepth 1 -name "*.so*" -exec install -m 0755 {} ${D}${libdir}/ \; || true
     find ${S}/lib/3rd -maxdepth 1 -name "*.so*" -exec install -m 0755 {} ${D}${libdir}/3rd/ \; || true
@@ -128,10 +131,27 @@ do_install() {
     # Public headers (consumed by cvi-rtsp, maix-cdk, nanokvm-server).
     install -d ${D}${includedir}
     cp -a ${S}/include/. ${D}${includedir}/ || true
+
+    # Full cvitek "MW_DIR" (cvi_mpi) tree -- lib (incl. static .a + 3rd), include,
+    # and pkgconfig -- for build-time consumers that locate the middleware via
+    # MW_DIR / `pkg-config cvi_common cvi_sample` (cvi-rtsp, maix-cdk).
+    install -d ${D}${datadir}/cvi_mpi
+    cp -a ${S}/lib ${D}${datadir}/cvi_mpi/
+    cp -a ${S}/include ${D}${datadir}/cvi_mpi/
+    cp -a ${S}/pkgconfig ${D}${datadir}/cvi_mpi/
 }
 
-# Prebuilt vendor .so (ISP/audio algo) ship without GNU_HASH / are pre-stripped;
-# they are not cross-linked against the OE sysroot.
+# The libs are built with the T-Head GCC + cvitek link flags (ld invoked
+# directly with --gc-sections); their ELF layout makes OE's debug-split objcopy
+# fail ("not enough room for program headers"). They also bundle prebuilt vendor
+# .so (ISP/audio algo) without GNU_HASH. Treat them as vendor binaries: no
+# strip, no debug split, and skip the corresponding QA.
+INHIBIT_PACKAGE_STRIP = "1"
+INHIBIT_PACKAGE_DEBUG_SPLIT = "1"
+INHIBIT_SYSROOT_STRIP = "1"
 INSANE_SKIP:${PN} = "ldflags already-stripped textrel"
+INSANE_SKIP:${PN}-dev = "staticdev"
 FILES:${PN} = "${libdir}"
-FILES:${PN}-dev = "${includedir}"
+# cvi_mpi is the build-time middleware SDK tree (static libs + headers + pkgconfig)
+# for cvi-rtsp/maix-cdk; keep it out of the runtime package.
+FILES:${PN}-dev = "${includedir} ${datadir}/cvi_mpi"

@@ -28,16 +28,16 @@ MEDIA_TYPE="application/vnd.yocto.cache.layer.v1.tar+zstd"
 
 tag_dir() {
   case "$1" in
-    sstate)    printf '%s' "${SSTATE_DIR}" ;;
-    downloads) printf '%s' "${DL_DIR}" ;;
+    sstate|sstate-*)    printf '%s' "${SSTATE_DIR}" ;;
+    downloads|downloads-*) printf '%s' "${DL_DIR}" ;;
     *) return 1 ;;
   esac
 }
 
 tag_archive() {
   case "$1" in
-    sstate)    printf '%s' "sstate-cache.tar.zst" ;;
-    downloads) printf '%s' "downloads.tar.zst" ;;
+    sstate|sstate-*)    printf '%s' "sstate-cache.tar.zst" ;;
+    downloads|downloads-*) printf '%s' "downloads.tar.zst" ;;
     *) return 1 ;;
   esac
 }
