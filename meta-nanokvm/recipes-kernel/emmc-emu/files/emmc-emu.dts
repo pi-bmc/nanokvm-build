@@ -1,0 +1,35 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * emmc-emu.dts - device-tree overlay for the NanoKVM eMMC emulator.
+ *
+ * Two jobs:
+ *   1. Disable the SDIO1 *host* controller (wifisd@4320000) so the cvitek
+ *      sdhci driver never probes it and never power-sequences or re-muxes the
+ *      SD1 pads out from under us. This is the one DT change that actually
+ *      matters - the emulator otherwise self-instantiates from module init.
+ *   2. (Optional) declare the emulator node, for users who prefer DT binding
+ *      over the module's self-registered platform device (then load with
+ *      emmc_self_device=0).
+ *
+ * Applying it:
+ *   - Baked-in (recommended): copy these two changes into the board DTS
+ *       arch/riscv/boot/dts/cvitek/sg2002_licheervnano_sd.dts
+ *     i.e. add `status = "disabled";` to the wifisd node and add the
+ *     emmc-emu node. The FIT/boot.sd is rebuilt by the kernel recipe.
+ *   - Runtime overlay: requires the base DTB to be compiled with symbols
+ *     (dtc -@) and CONFIG_OF_OVERLAY + configfs overlay support. Many cvitek
+ *     DTBs lack __symbols__, so prefer the baked-in edit.
+ */
+/dts-v1/;
+/plugin/;
+
+&wifisd {
+	status = "disabled";
+};
+
+&{/} {
+	emmc_emu: emmc-emu {
+		compatible = "nanokvm,emmc-emu";
+		status = "okay";
+	};
+};
