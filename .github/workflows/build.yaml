@@ -12,14 +12,18 @@ jobs:
     # Strongly recommended to use your own powerful hardware
     runs-on: ubuntu-latest
 
-    # Use the official Siemens kas container environment
-    container:
-      image: ghcr.io/siemens/kas/kas:latest
-      options: --privileged # Often required for certain loop device/mount tasks in Yocto
-
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
+
+      - name: Cache and install build dependencies
+        uses: awalsh128/cache-apt-pkgs-action@latest
+        with:
+          packages: build-essential git bison flex bc libssl-dev libgnutls28-dev device-tree-compiler kas chrpath diffstat
+          version: 1.0
+
+      - name: Disable AppArmor unprivileged user namespace restriction
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 
       - name: Create Cache and Download Directories
         run: |
