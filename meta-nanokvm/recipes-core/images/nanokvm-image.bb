@@ -181,3 +181,23 @@ IMAGE_ROOTFS_EXTRA_SPACE = "65536"
 # --- SD card image via WKS ---
 WKS_FILE = "nanokvm-sd.wks"
 do_image_wic[depends] += "fsbl:do_deploy u-boot-sophgo:do_deploy linux-sophgo:do_deploy"
+
+# --- Publish under the original LicheeRV-Nano-Build image name ---
+# The upstream build emitted ${BOARD_SHORT}-${VARIANT}_${STORAGE_TYPE}.img.xz =
+# "licheervnano-kvm_sd.img.xz". The wic output is the byte-identical raw SD image
+# (only the Yocto .wic extension differs), so also expose it under that name:
+# a real standalone copy of the compressed image, plus a symlink for the raw one.
+NANOKVM_IMG_ALIAS = "licheervnano-kvm_sd"
+# do_image_complete is a python task, so register a shell postfunc rather than
+# appending shell to it. Runs before the task's sstate capture, so the aliases
+# are deployed to DEPLOY_DIR_IMAGE alongside the .wic artifacts.
+create_nanokvm_img_alias() {
+    if [ -e "${IMGDEPLOYDIR}/${IMAGE_LINK_NAME}.wic.xz" ]; then
+        cp -fL "${IMGDEPLOYDIR}/${IMAGE_LINK_NAME}.wic.xz" \
+               "${IMGDEPLOYDIR}/${NANOKVM_IMG_ALIAS}.img.xz"
+    fi
+    if [ -e "${IMGDEPLOYDIR}/${IMAGE_LINK_NAME}.wic" ]; then
+        ln -sf "${IMAGE_LINK_NAME}.wic" "${IMGDEPLOYDIR}/${NANOKVM_IMG_ALIAS}.img"
+    fi
+}
+do_image_complete[postfuncs] += "create_nanokvm_img_alias"
