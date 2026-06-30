@@ -33,7 +33,7 @@ TCMODE = "external"
 #     riscv64-linux-musl-gcc-thead_20230307-10.2.0-x86_64.tar.gz
 # sha256: 22c0a19968b5edba4153ed9269ed4e8b7a3dd821c0e4ae56ca77789693fb9a54
 # (from host/riscv64-gcc-thead_20230307-10.2.0-x86_64.sha256)
-EXTERNAL_TOOLCHAIN = "${TOPDIR}/../host-tools/gcc"
+EXTERNAL_TOOLCHAIN = "${TOPDIR}/host-tools/gcc"
 
 # Toolchain binary directory (used by meta-external-toolchain).
 EXTERNAL_TOOLCHAIN_RUN_DIR = "${EXTERNAL_TOOLCHAIN}/bin"

@@ -1,0 +1,35 @@
+name: Yocto CI Build
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+  workflow_dispatch:
+
+jobs:
+  yocto-build:
+    # Strongly recommended to use your own powerful hardware
+    runs-on: ubuntu-latest
+
+    # Use the official Siemens kas container environment
+    container:
+      image: ghcr.io/siemens/kas/kas:latest
+      options: --privileged # Often required for certain loop device/mount tasks in Yocto
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Create Cache and Download Directories
+        run: |
+          mkdir -p ${{ github.workspace }}/build/downloads
+          mkdir -p ${{ github.workspace }}/build/sstate-cache
+
+      - name: Run kas Build
+        run: |
+          kas build kas.yml
+        env:
+          # Pass cache paths into your BitBake configuration variables via kas
+          KAS_DL_DIR: ${{ github.workspace }}/build/downloads
+          KAS_SSTATE_DIR: ${{ github.workspace }}/build/sstate-cache

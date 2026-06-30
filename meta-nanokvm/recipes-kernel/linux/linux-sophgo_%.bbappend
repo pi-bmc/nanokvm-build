@@ -1,5 +1,7 @@
-# Supply the board defconfig from the sophgo-build submodule.
-FILESEXTRAPATHS:prepend:sg2002-licheervnano := "${TOPDIR}/../build/boards/sg200x/sg2002_licheervnano_sd/linux:"
+# Supply the board defconfig. It originates from the sophgo-build submodule
+# (boards/sg200x/sg2002_licheervnano_sd/linux/) and is vendored into this layer
+# under files/ so the build does not depend on the submodule checkout.
+FILESEXTRAPATHS:prepend := "${THISDIR}/files:"
 
 SRC_URI:append:sg2002-licheervnano = " \
     file://sg2002_licheervnano_sd_defconfig \

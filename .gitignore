@@ -20,3 +20,4 @@ sstate-cache/
 poky/
 meta-openembedded/
 meta-riscv/
+build/
