@@ -32,3 +32,11 @@ UBOOT_INITIAL_ENV = ""
 do_deploy:append() {
     install -m 0644 "${B}/fip.bin" "${DEPLOYDIR}/fip.bin" || true
 }
+
+# U-Boot kconfig (zconf parser) needs bison + flex at build time.
+DEPENDS += "bison-native flex-native"
+
+# Build U-Boot out-of-tree (B != S) so the cvitek Makefile, which forces
+# KBUILD_SRC/out-of-tree mode, does not trip its "source tree not clean" check
+# on the .config that do_configure would otherwise write into S.
+B = "${WORKDIR}/build"

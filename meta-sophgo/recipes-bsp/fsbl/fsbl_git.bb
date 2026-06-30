@@ -1,6 +1,5 @@
 SUMMARY = "First-Stage Bootloader for Sophgo SG200X"
-LICENSE = "MIT"
-LIC_FILES_CHKSUM = "file://LICENSE;md5=90b4a3b2dd63ee0498a1db08a1c66859"
+LICENSE = "CLOSED"
 
 DEPENDS = "opensbi-sophgo"
 

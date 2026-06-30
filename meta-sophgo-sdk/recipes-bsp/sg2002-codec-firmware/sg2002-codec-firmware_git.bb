@@ -1,6 +1,7 @@
 SUMMARY = "Sophgo SG2002 codec firmware blobs"
-LICENSE = "Proprietary"
-LIC_FILES_CHKSUM = ""
+# Pre-built proprietary firmware blobs with no accompanying license file; CLOSED
+# tells the license tooling there is no LIC_FILES_CHKSUM to verify.
+LICENSE = "CLOSED"
 
 # Buildroot source: BR2_PACKAGE_SG2002_CODEC_FIRMWARE=y
 # Binary firmware blobs for the Sophgo SG2002 media codec.
@@ -12,6 +13,12 @@ PV = "0.1+git${SRCPV}"
 S = "${WORKDIR}/git"
 
 COMPATIBLE_MACHINE = "sg2002-licheervnano"
+
+# These are pre-built firmware blobs shipped in the middleware tree — there is
+# nothing to compile. Without this, base do_compile runs oe_runmake against the
+# middleware Makefile and fails ("PROJECT_FULLNAME not defined").
+do_configure[noexec] = "1"
+do_compile[noexec] = "1"
 
 FIRMWARE_INSTALL_DIR = "${nonarch_base_libdir}/firmware/sophgo"
 

@@ -1,6 +1,5 @@
 SUMMARY = "Sophgo CVI RTSP server library for SG200X"
-LICENSE = "MIT"
-LIC_FILES_CHKSUM = "file://LICENSE;md5=6b0ba0a65f88bb3b470ef5b9fb5c35e1"
+LICENSE = "CLOSED"
 
 inherit cmake
 

@@ -1,6 +1,6 @@
 SUMMARY = "MaixCDK — Sophgo Maix C/C++ development kit for SG200X"
 LICENSE = "MIT"
-LIC_FILES_CHKSUM = "file://LICENSE;md5=6b0ba0a65f88bb3b470ef5b9fb5c35e1"
+LIC_FILES_CHKSUM = "file://LICENSE;md5=6b0a031c0458b51a1c975baf059fc6cf"
 
 # Buildroot source: BR2_PACKAGE_MAIX_CDK=y
 # The MaixCDK provides runtime libraries and utilities used by NanoKVM and MaixPy.

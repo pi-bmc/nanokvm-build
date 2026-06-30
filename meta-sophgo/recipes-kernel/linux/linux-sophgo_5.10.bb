@@ -39,3 +39,7 @@ do_configure:prepend() {
 #   arch/riscv/boot/dts/cvitek/sg2002_licheervnano_sd.dts
 # If you need to override the DTS, add file://sg2002_licheervnano_sd.dts to SRC_URI
 # and copy it in do_configure:prepend.
+
+# The cvitek 5.10 kernel predates GCC 13/14 default-error diagnostics; keep them
+# as warnings so it builds with the oe-core toolchain.
+export KCFLAGS = "-Wno-error=implicit-function-declaration -Wno-error=implicit-int -Wno-error=incompatible-pointer-types"

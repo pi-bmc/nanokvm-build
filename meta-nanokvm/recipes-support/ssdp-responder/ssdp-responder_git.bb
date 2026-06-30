@@ -1,7 +1,7 @@
 SUMMARY = "Lightweight SSDP/UPnP responder"
 HOMEPAGE = "https://github.com/troglobit/ssdp-responder"
 LICENSE = "ISC"
-LIC_FILES_CHKSUM = "file://LICENSE;md5=f0a90f7b8bd43f0c5b70b60d81d3cd58"
+LIC_FILES_CHKSUM = "file://LICENSE;md5=dcc2c197d15d92d758ad9ce88d3016cc"
 
 SRC_URI = "git://github.com/troglobit/ssdp-responder;branch=master;protocol=https"
 SRCREV = "${AUTOREV}"
@@ -20,4 +20,4 @@ do_install:append() {
     fi
 }
 
-FILES:${PN} = "${sbindir}/ssdpd ${sysconfdir}/init.d/ssdpd"
+FILES:${PN} = "${sbindir}/ssdpd ${bindir}/ssdp-scan ${sysconfdir}/init.d/ssdpd"

@@ -1,6 +1,5 @@
 SUMMARY = "Sophgo SG200X pinmux configuration utility"
-LICENSE = "MIT"
-LIC_FILES_CHKSUM = "file://LICENSE;md5=6b0ba0a65f88bb3b470ef5b9fb5c35e1"
+LICENSE = "CLOSED"
 
 # Buildroot source: BR2_PACKAGE_CVI_PINMUX=y, BR2_PACKAGE_CVI_PINMUX_SG200X=y
 # Fetched as part of sophgo-osdrv extras or a dedicated package in the vendor SDK.
