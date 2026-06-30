@@ -58,5 +58,12 @@ do_install() {
     cp -a ${S}/interdrv/include/. ${D}${includedir}/cvitek-osdrv/
 }
 
-FILES:${PN} = "${nonarch_base_libdir}/modules"
+# 'inherit module' splits every .ko into its own kernel-module-<name> package and
+# makes osdrv a metapackage RDEPENDing them all. Claiming the modules dir for the
+# osdrv package (FILES:${PN}=.../modules) instead left those split packages empty
+# -- e.g. kernel-module-cvi-wiegand-gpio -- which are then dropped from the feed
+# and can't satisfy osdrv's own auto-generated RDEPENDS. Let the split own the
+# .ko; osdrv itself only carries the staged headers (-dev) and is an empty
+# metapackage.
+ALLOW_EMPTY:${PN} = "1"
 FILES:${PN}-dev = "${includedir}/cvitek-osdrv"

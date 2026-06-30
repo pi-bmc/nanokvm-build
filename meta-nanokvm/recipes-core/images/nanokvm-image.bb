@@ -3,6 +3,15 @@ LICENSE = "MIT"
 
 inherit core-image
 
+# core-image's default base install includes packagegroup-base-extended, which
+# unconditionally RDEPENDS packagegroup-base-wifi -> wireless-regdb-static. That
+# conflicts with the full wireless-regdb this image ships and would also drag in
+# wireless kernel modules. Use the plain packagegroup-base instead: it pulls the
+# wifi/bluetooth subgroups only when MACHINE_FEATURES advertises them (it does
+# not here), so the WiFi interface is provided purely by the explicit userspace
+# below (wpa-supplicant, hostapd, iw + wireless-regdb) with no wireless modules.
+CORE_IMAGE_BASE_INSTALL = "packagegroup-core-boot packagegroup-base"
+
 # --- Features ---
 IMAGE_FEATURES += " \
     ssh-server-openssh \
@@ -37,7 +46,6 @@ IMAGE_INSTALL:append = " \
 # --- Network core ---
 IMAGE_INSTALL:append = " \
     ntp \
-    avahi \
     avahi-daemon \
     lldpd \
     macchanger \
