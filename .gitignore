@@ -3,10 +3,7 @@
 *.o
 *.ko
 *.d
-*.sqfs
-install/*
 cscope.out
-host-tools
 .vscode-ctags
 *.tar.gz
 
@@ -18,3 +15,8 @@ sstate-cache/
 *.img
 *.wic
 *.wic.xz
+
+# Upstream layers fetched by setup-yocto.sh / kas
+poky/
+meta-openembedded/
+meta-riscv/
