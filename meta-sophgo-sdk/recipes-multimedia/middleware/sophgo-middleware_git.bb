@@ -119,7 +119,13 @@ do_compile() {
     # apps the image does not need.
     oe_runmake -C ${S} ${CVI_MW_OEMAKE} prepare
     oe_runmake -C ${S}/modules ${CVI_MW_OEMAKE}
-    oe_runmake -C ${S} ${CVI_MW_OEMAKE} component
+    # component/isp's libsns_full (Makefile_full) compiles the sensor sources via
+    # make's implicit rule, so its includes must come from the global CFLAGS
+    # (CVI_TARGET_PACKAGES_INCLUDE) rather than a per-target -I. Supply the cvi
+    # kernel UAPI + middleware include dirs there (overrides the empty default).
+    oe_runmake -C ${S} ${CVI_MW_OEMAKE} \
+        CVI_TARGET_PACKAGES_INCLUDE="-I${CVI_KERNEL_HDR}/include -I${CVI_KERNEL_HDR}/include/linux -I${S}/include -I${S}/include/isp/cv181x" \
+        component
 }
 
 do_install() {
@@ -150,7 +156,9 @@ INHIBIT_PACKAGE_STRIP = "1"
 INHIBIT_PACKAGE_DEBUG_SPLIT = "1"
 INHIBIT_SYSROOT_STRIP = "1"
 INSANE_SKIP:${PN} = "ldflags already-stripped textrel"
-INSANE_SKIP:${PN}-dev = "staticdev"
+# cvi_mpi is a vendor SDK tree: it ships real (non-symlink) unversioned .so plus
+# static libs, which the default -dev QA rejects.
+INSANE_SKIP:${PN}-dev = "staticdev dev-so dev-elf"
 FILES:${PN} = "${libdir}"
 # cvi_mpi is the build-time middleware SDK tree (static libs + headers + pkgconfig)
 # for cvi-rtsp/maix-cdk; keep it out of the runtime package.
