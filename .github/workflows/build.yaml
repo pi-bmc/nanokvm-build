@@ -7,6 +7,33 @@ on:
     branches: ["*"]
   workflow_dispatch:
 
+# Needed to push the Yocto OCI caches (sstate + downloads) to GHCR.
+permissions:
+  contents: read
+  packages: write
+
+# Serialize builds of the same ref so two runs don't clobber each other's
+# cache push. Different refs may run concurrently and share the same cache
+# tags — sstate is content-addressed, so sharing is safe and additive.
+concurrency:
+  group: yocto-build-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  # Non-expiring OCI cache stored as GHCR artifacts. Unlike actions/cache,
+  # GHCR packages do not expire after 7 days and are not subject to the 10 GB
+  # repo cache limit, so builds can always be resumed from prior sstate.
+  CACHE_IMAGE: ghcr.io/${{ github.repository }}/yocto-cache
+  # Must match DL_DIR / SSTATE_DIR from kas.yml (TOPDIR = <workspace>/build).
+  DL_DIR: ${{ github.workspace }}/build/downloads
+  SSTATE_DIR: ${{ github.workspace }}/build/sstate-cache
+  # Cache push/pull needs a write-capable token; fork PRs only get a read-only
+  # one, so caching is disabled there (the build still runs, just uncached).
+  CACHE_ENABLED: ${{ github.event_name != 'pull_request' }}
+  # How often to checkpoint sstate to the registry during the build so progress
+  # survives a cancellation that interrupts the final save.
+  CACHE_CHECKPOINT_INTERVAL_SECONDS: "1200"
+
 jobs:
   yocto-build:
     # Strongly recommended to use your own powerful hardware
@@ -16,24 +43,81 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v7
 
+      # Yocto tmp + a multi-GB restored cache will not fit in the default
+      # ubuntu-latest free space; reclaim ~30 GB before building.
+      - name: Free up disk space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
+
       - name: Cache and install build dependencies
         uses: awalsh128/cache-apt-pkgs-action@latest
         with:
-          packages: build-essential git bison flex bc libssl-dev libgnutls28-dev device-tree-compiler kas chrpath diffstat
+          packages: build-essential git bison flex bc libssl-dev libgnutls28-dev device-tree-compiler kas chrpath diffstat zstd
           version: 1.0
 
       - name: Disable AppArmor unprivileged user namespace restriction
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 
-      - name: Create Cache and Download Directories
-        run: |
-          mkdir -p ${{ github.workspace }}/build/downloads
-          mkdir -p ${{ github.workspace }}/build/sstate-cache
+      - name: Set up oras
+        uses: oras-project/setup-oras@v1
+
+      # Cache auth/push only works with a write-capable token (push events and
+      # same-repo runs). Fork PRs get a read-only token, so they build without
+      # the OCI cache instead of failing.
+      - name: Log in to GHCR
+        if: env.CACHE_ENABLED == 'true'
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | oras login ghcr.io -u ${{ github.actor }} --password-stdin
+
+      - name: Create cache and download directories
+        run: mkdir -p "$DL_DIR" "$SSTATE_DIR"
+
+      - name: Restore Yocto OCI caches
+        if: env.CACHE_ENABLED == 'true'
+        continue-on-error: true
+        run: bash "${GITHUB_WORKSPACE}/.github/scripts/yocto-cache.sh" restore sstate downloads
 
       - name: Run kas Build
         run: |
+          set -uo pipefail
+          checkpoint_pid=""
+          if [ "${CACHE_ENABLED}" = "true" ]; then
+            # Periodically push sstate to the registry while the build runs, so
+            # that cancelling the workflow still preserves progress even if the
+            # final "Save" step is cut short by the cancellation grace period.
+            (
+              while sleep "${CACHE_CHECKPOINT_INTERVAL_SECONDS}"; do
+                bash "${GITHUB_WORKSPACE}/.github/scripts/yocto-cache.sh" save sstate || true
+              done
+            ) &
+            checkpoint_pid=$!
+            # Stop the checkpoint loop whenever this step exits (incl. cancel).
+            trap '[ -n "${checkpoint_pid}" ] && kill "${checkpoint_pid}" 2>/dev/null || true' EXIT INT TERM
+          fi
+
           kas build kas.yml
-        env:
-          # Pass cache paths into your BitBake configuration variables via kas
-          KAS_DL_DIR: ${{ github.workspace }}/build/downloads
-          KAS_SSTATE_DIR: ${{ github.workspace }}/build/sstate-cache
+
+      # Runs on success, failure, AND cancellation (always()), pushing the full
+      # sstate + downloads so the next run resumes from the latest progress.
+      - name: Save Yocto OCI caches
+        if: ${{ always() && env.CACHE_ENABLED == 'true' }}
+        run: bash "${GITHUB_WORKSPACE}/.github/scripts/yocto-cache.sh" save sstate downloads
+
+      # Publish the produced SD card image + bootloader artifacts for download.
+      - name: Upload image artifacts
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nanokvm-sd-image
+          if-no-files-found: warn
+          path: |
+            build/tmp-musl/deploy/images/**/*.wic
+            build/tmp-musl/deploy/images/**/*.wic.xz
+            build/tmp-musl/deploy/images/**/fip.bin
+            build/tmp-musl/deploy/images/**/boot.sd
