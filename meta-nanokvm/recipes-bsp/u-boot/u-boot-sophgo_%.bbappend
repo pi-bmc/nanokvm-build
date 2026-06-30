@@ -23,7 +23,10 @@ SRC_URI:append:sg2002-licheervnano = " \
 # to /.config and make tries (and fails) to *build* it. Point BUILD_PATH at a
 # directory holding the cvitek build config so the include just succeeds.
 CVI_BUILD_DIR = "${WORKDIR}/cvi-build"
-EXTRA_OEMAKE:append:sg2002-licheervnano = " BUILD_PATH=${CVI_BUILD_DIR}"
+# CHIP/CVIBOARD select the board device tree: arch/riscv/dts/Makefile builds
+# $(CHIP)_$(CVIBOARD).dtb = sg2002_licheervnano_sd.dtb. The sophgo build exports
+# these for u-boot targets; OE must pass them too (else it builds "_.dtb").
+EXTRA_OEMAKE:append:sg2002-licheervnano = " BUILD_PATH=${CVI_BUILD_DIR} CHIP=sg2002 CVIBOARD=licheervnano_sd"
 
 do_configure:prepend:sg2002-licheervnano() {
     # Keep the source tree clean for the out-of-tree build (B != S): the cvitek

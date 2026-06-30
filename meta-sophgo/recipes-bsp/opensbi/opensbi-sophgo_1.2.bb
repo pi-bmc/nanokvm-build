@@ -17,9 +17,28 @@ COMPATIBLE_MACHINE = "sg2002-licheervnano"
 PLATFORM = "generic"
 FW_PAYLOAD ?= "y"
 
+# CHIP_ARCH selects the prebuilt power-management SRAM blob
+# (pm_default_cv181x.bin) the cvitek platform .incbin's; OPENSBI_PATH is the
+# prefix the Makefile joins it with.
 EXTRA_OEMAKE = "CROSS_COMPILE=${TARGET_PREFIX} \
                 PLATFORM=${PLATFORM} \
-                FW_PAYLOAD=${FW_PAYLOAD}"
+                FW_PAYLOAD=${FW_PAYLOAD} \
+                CHIP_ARCH=CV181X \
+                OPENSBI_PATH=${S}"
+
+do_compile:prepend() {
+    # SG2002 is in the cv181x family. The cvitek OpenSBI platform code gates
+    # chip specifics (e.g. SUSPEND_SRAM_ENTRY) on CONFIG_CV181X, which the
+    # sophgo-build orchestration defines from CHIP_ARCH; inject it here.
+    if ! grep -q "DCONFIG_CV181X" "${S}/platform/generic/cvitek/objects.mk"; then
+        # GENFLAGS (the actual compile flags) pulls in platform-genflags-y.
+        # -Ulinux: the OE target triplet path (riscv64-oe-linux-musl) is passed
+        # unquoted via -DPM_SRAM_BIN_PATH and .incbin'd; GCC's predefined `linux`
+        # macro would otherwise rewrite "linux" -> "1" and break the path.
+        echo 'platform-genflags-y += -DCONFIG_CV181X -Ulinux' >> \
+            "${S}/platform/generic/cvitek/objects.mk"
+    fi
+}
 
 do_compile() {
     oe_runmake -C ${S} all

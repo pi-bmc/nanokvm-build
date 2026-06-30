@@ -12,8 +12,17 @@ S = "${WORKDIR}/git"
 
 DEPENDS = "virtual/kernel"
 
+# Fold OE LDFLAGS into the compiler so the Makefile's `$(CC) ... -o` link emits
+# --hash-style=gnu even though it ignores $(LDFLAGS) for the object/link rules.
+TARGET_CC_ARCH += "${LDFLAGS}"
+
 do_compile() {
-    oe_runmake CC="${CC}" CFLAGS="${CFLAGS}"
+    # The Makefile links with `$(CC) $(LDFLAGS)` but defaults LDFLAGS to "-g",
+    # dropping OE's --hash-style=gnu (the do_package_qa GNU_HASH check fails).
+    # Clean first so a stale (pre-fix) binary is not left un-relinked, then pass
+    # OE CC (which now carries LDFLAGS via TARGET_CC_ARCH) and LDFLAGS through.
+    oe_runmake clean || true
+    oe_runmake CC="${CC}" CFLAGS="${CFLAGS}" LDFLAGS="${LDFLAGS}"
 }
 
 do_install() {

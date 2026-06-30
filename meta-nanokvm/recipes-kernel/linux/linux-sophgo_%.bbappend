@@ -21,6 +21,39 @@ do_configure:prepend:sg2002-licheervnano() {
 
 KBUILD_DEFCONFIG:sg2002-licheervnano = "sg2002_licheervnano_sd_defconfig"
 
+# The board defconfig is applied by the base do_configure (KBUILD_DEFCONFIG), but
+# kconfig's olddefconfig re-resolves a few symbols to their Kconfig defaults,
+# diverging from what the board needs. Re-merge the defconfig and then force the
+# diverging symbols as the LAST step (no olddefconfig afterwards) so do_compile's
+# syncconfig preserves these explicit values.
+do_configure:append:sg2002-licheervnano() {
+    cfg="${B}/.config"
+    defcfg="${S}/arch/riscv/configs/sg2002_licheervnano_sd_defconfig"
+
+    # ARCH_CVITEK is the SoC platform option; cvitek-modified kernel code needs
+    # it (e.g. the unguarded 'addr' use in drivers/of/of_reserved_mem.c). The
+    # symbol is defined twice in this kernel's Kconfig, so olddefconfig can drop
+    # it -- ensure it is set, re-merge the defconfig to restore its sub-options,
+    # then resolve dependencies once.
+    if ! grep -q "^CONFIG_ARCH_CVITEK=y" "${cfg}"; then
+        echo "CONFIG_ARCH_CVITEK=y" >> "${cfg}"
+    fi
+    "${S}/scripts/kconfig/merge_config.sh" -m -O "${B}" "${cfg}" "${defcfg}"
+    oe_runmake -C ${S} O=${B} olddefconfig
+
+    # Final overrides (olddefconfig reverts these to Kconfig defaults):
+    #  * the "platform of SoC" choice defaults to FPGA, but SG2002 is an ASIC;
+    #  * CONFIG_COMPAT defaults to y, but riscv 5.10 has no
+    #    arch_compat_alloc_user_space (vmlinux link fails) and the board runs a
+    #    64-bit-only musl userspace, so 32-bit compat is unused.
+    sed -i -e 's/^CONFIG_ARCH_CV181X_FPGA=y/# CONFIG_ARCH_CV181X_FPGA is not set/' \
+           -e 's/^CONFIG_ARCH_CV181X_PALLADIUM=y/# CONFIG_ARCH_CV181X_PALLADIUM is not set/' \
+           -e 's/^CONFIG_COMPAT=y/# CONFIG_COMPAT is not set/' "${cfg}"
+    if ! grep -q '^CONFIG_ARCH_CV181X_ASIC=y' "${cfg}"; then
+        echo "CONFIG_ARCH_CV181X_ASIC=y" >> "${cfg}"
+    fi
+}
+
 # Build the cvitek-style FIT boot image (boot.sd) and deploy it so wic can place
 # it in the FAT boot partition (IMAGE_BOOT_FILES = "fip.bin boot.sd"). This
 # replaces the sophgo-build "make boot" step which produced boot.itb -> boot.sd.
