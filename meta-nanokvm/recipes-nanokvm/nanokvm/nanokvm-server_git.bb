@@ -1,96 +1,91 @@
-SUMMARY = "NanoKVM — IP KVM server for LicheeRV Nano"
-HOMEPAGE = "https://github.com/sipeed/NanoKVM"
-LICENSE = "Apache-2.0"
-LIC_FILES_CHKSUM = "file://src/github.com/sipeed/NanoKVM/LICENSE;md5=1ebbd3e34237af26da5dc08a4e440464"
+SUMMARY = "NanoKVM BMC server (pi-bmc/nanokvm-app) for LicheeRV Nano / SG2002"
+HOMEPAGE = "https://github.com/pi-bmc/nanokvm-app"
+LICENSE = "GPL-3.0-only"
+LIC_FILES_CHKSUM = "file://src/${GO_IMPORT}/LICENSE;md5=1ebbd3e34237af26da5dc08a4e440464"
 
 inherit go-mod go update-rc.d
 
-GO_IMPORT = "github.com/sipeed/NanoKVM"
+# NB: the GitHub repo is pi-bmc/nanokvm-app, but the Go module path (go.mod) is
+# github.com/BMCPi/NanoKVM -- GO_IMPORT must match the module path, not the URL.
+GO_IMPORT = "github.com/BMCPi/NanoKVM"
 SRCREV = "${AUTOREV}"
-SRC_URI = " \
-    git://github.com/sipeed/NanoKVM;branch=main;protocol=https \
-    file://nanokvm.init \
-    "
+SRC_URI = "git://github.com/pi-bmc/nanokvm-app;branch=main;protocol=https"
 
 S = "${WORKDIR}/git"
 
-# patchelf is used to point the binary at its bundled cvitek libs.
-DEPENDS += "patchelf-native"
+# The refactored app is pure Go (CGO disabled) -- no cvitek vision libs, no cgo,
+# no patchelf. The generated code (templ *_templ.go and the tailwind
+# server/assets/css/output.css) is committed upstream, so no templ/tailwindcss
+# codegen tooling is needed at build time; a plain `go build ./cmd/server`
+# suffices. (Upstream can alternatively build via goreleaser, but that needs
+# Docker + the goreleaser tool, so we drive `go build` directly here.)
 
-# The NanoKVM Go server lives in the server/ subdirectory (module
-# 'NanoKVM-Server') and uses cgo against the pre-built cvitek libraries in
-# server/dl_lib (-I../include -L../dl_lib -lkvm). Upstream ships no vendor/
-# directory, so Go fetches the module dependencies over the network at build
-# time. go.mod requires Go 1.24 while oe-core ships 1.22, so the toolchain
-# auto-downloads the newer Go (GOTOOLCHAIN defaults to "auto").
+# go.mod requires Go 1.25 while oe-core ships an older Go; GOTOOLCHAIN=auto lets
+# the toolchain fetch the required version (needs network during compile). Go
+# module dependencies are also fetched at build time (no vendor/ dir upstream).
 do_compile[network] = "1"
 
-GO_SERVER_DIR = "${B}/src/${GO_IMPORT}/server"
-NANOKVM_LIBDIR = "${libdir}/nanokvm"
+# Module/build root (go.bbclass unpacks the checkout under src/${GO_IMPORT} and
+# sets GOPATH=${B}); the three main packages live in cmd/.
+GO_APP_DIR = "${B}/src/${GO_IMPORT}"
 
-# go-mod.bbclass adds "${B}/.mod" to cleandirs (rm -rf before each compile), but
-# Go marks the auto-downloaded toolchain (go1.24) directories read-only, so that
-# rm fails with EPERM. Drop .mod from cleandirs: the module cache is persisted
-# between runs (faster) and made writable at the end of do_compile so it can
-# still be cleaned up later.
+# go-mod adds "${B}/.mod" to cleandirs, but the auto-downloaded toolchain marks
+# its dirs read-only so that rm fails; drop .mod from cleandirs and make it
+# writable at the end instead.
 do_compile[cleandirs] = "${B}/bin ${B}/pkg"
 
 do_compile() {
-    cd ${GO_SERVER_DIR}
+    cd ${GO_APP_DIR}
 
     export GOFLAGS="-mod=mod"
-    export CGO_ENABLED="1"
-    # go.mod requires Go 1.24 but oe-core ships 1.22; allow the toolchain to
-    # download and switch to the required Go (needs network, enabled above).
-    # go.bbclass sets GOENV=off, so GOSUMDB must be set explicitly for the
-    # toolchain (and module) checksum verification to work.
+    export CGO_ENABLED="0"
     export GOTOOLCHAIN="auto"
     export GOSUMDB="sum.golang.org"
-    # GOARCH/GOOS, the cross CC, CGO_* flags, GOPROXY and the module cache are
-    # provided by go.bbclass / go-mod.bbclass.
+    # GOARCH/GOOS, GOPROXY and the module cache come from go.bbclass/go-mod.bbclass.
 
-    ${GO} build -v -trimpath -o ${B}/NanoKVM-Server .
+    # Stamp the version the way the goreleaser build does (main.version/commit/date).
+    LDFLAGS="-s -w -X main.version=${PV} -X main.date=reproducible"
+
+    ${GO} build -v -trimpath -ldflags "${LDFLAGS}" -o ${B}/NanoKVM-Server ./cmd/server
+    ${GO} build -v -trimpath -ldflags "-s -w"       -o ${B}/rpiboot       ./cmd/rpiboot
+    ${GO} build -v -trimpath -ldflags "-s -w"       -o ${B}/fw_env        ./cmd/fw_env
 
     # Keep the module cache (incl. the read-only downloaded toolchain) writable
     # so bitbake/rm can clean ${B} later.
     chmod -R u+w ${B}/.mod 2>/dev/null || true
 }
 
+# The app expects its server binary under /kvmapp/server (the init script stages
+# it to /tmp/server at runtime for atomic in-place upgrades).
+KVMAPP_DIR = "/kvmapp"
+
 do_install() {
+    install -d ${D}${KVMAPP_DIR}/server
+    install -m 0755 ${B}/NanoKVM-Server ${D}${KVMAPP_DIR}/server/NanoKVM-Server
+
+    # BMC CLI tools: rpiboot (Raspberry Pi boot control) and fw_env (U-Boot
+    # environment r/w) -- both used for board/UEFI control.
     install -d ${D}${bindir}
-    install -m 0755 ${B}/NanoKVM-Server ${D}${bindir}/nanokvm
+    install -m 0755 ${B}/rpiboot ${D}${bindir}/rpiboot
+    install -m 0755 ${B}/fw_env  ${D}${bindir}/fw_env
 
-    # Bundle the pre-built cvitek vision libraries the server links against and
-    # point the binary's RPATH at them.
-    install -d ${D}${NANOKVM_LIBDIR}
-    install -m 0644 ${GO_SERVER_DIR}/dl_lib/*.so ${D}${NANOKVM_LIBDIR}/
-    patchelf --set-rpath '${NANOKVM_LIBDIR}' ${D}${bindir}/nanokvm
-
+    # Service init script shipped by the app's packaging (start/stop/status via
+    # start-stop-daemon), registered through oe-core sysvinit/update-rc.d.
     install -d ${D}${sysconfdir}/init.d
-    install -m 0755 ${WORKDIR}/nanokvm.init ${D}${sysconfdir}/init.d/nanokvm
-
-    install -d ${D}${datadir}/nanokvm
+    install -m 0755 ${GO_APP_DIR}/packaging/etc/init.d/S95nanokvm \
+        ${D}${sysconfdir}/init.d/nanokvm
 }
 
 INITSCRIPT_NAME = "nanokvm"
-INITSCRIPT_PARAMS = "defaults 99"
+INITSCRIPT_PARAMS = "defaults 95"
 
-FILESEXTRAPATHS:prepend := "${THISDIR}/nanokvm:"
-
-# The dl_lib blobs are pre-built, unversioned shared objects; relax the QA
-# checks that do not apply to vendored binaries.
-#
-# file-rdeps: the cvitek vision libs (libkvm.so, libcvi_ispd2.so, ...) link
-#   against json-c and OpenCV 4.9 (libjson-c.so.5, libopencv_*.so.409). For the
-#   on-device vision/video feature to work at runtime those must be present in
-#   the rootfs (add "json-c" + the opencv 4.9 lib packages to the image); the
-#   dependency is skipped here because the providers are not pulled in by this
-#   package alone.
-INSANE_SKIP:${PN} += "already-stripped ldflags rpaths dev-so textrel file-rdeps"
+# Statically-linked Go binaries: Go does its own linking/stripping, so skip the
+# LDFLAGS-injection and already-stripped QA checks that don't apply.
+INSANE_SKIP:${PN} += "ldflags already-stripped"
 
 FILES:${PN} = " \
-    ${bindir}/nanokvm \
-    ${NANOKVM_LIBDIR} \
+    ${KVMAPP_DIR} \
+    ${bindir}/rpiboot \
+    ${bindir}/fw_env \
     ${sysconfdir}/init.d/nanokvm \
-    ${datadir}/nanokvm \
     "

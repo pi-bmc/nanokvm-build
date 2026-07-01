@@ -20,6 +20,7 @@ IMAGE_FEATURES += " \
 # --- System foundation ---
 IMAGE_INSTALL:append = " \
     kmod \
+    zram-swap \
     busybox \
     bash \
     file \

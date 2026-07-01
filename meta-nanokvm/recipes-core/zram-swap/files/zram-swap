@@ -1,0 +1,62 @@
+#!/bin/sh
+# zram-swap - compressed RAM swap for the memory-constrained SG2002 (~256 MiB).
+#
+# Backs a swap device with a compressed block of RAM (zram) instead of the SD
+# card: this gives real memory relief for the Go BMC server + eMMC emulator +
+# multimedia stack without SD wear or the latency of swapping to slow flash.
+# Sized to a fraction of physical RAM; lzo-rle typically compresses 2-3x, so the
+# effective RAM cost is well under the advertised swap size.
+
+ZRAM_DEV=/dev/zram0
+# Percent of physical RAM to expose as (compressed) swap.
+FRACTION=${ZRAM_FRACTION:-50}
+
+start() {
+    # zram is built into the kernel (num_devices=1 by default); modprobe is a
+    # harmless fallback if it is ever built as a module instead.
+    [ -e /sys/block/zram0 ] || modprobe zram num_devices=1 2>/dev/null
+    if [ ! -e /sys/block/zram0 ]; then
+        echo "zram-swap: zram device not available (CONFIG_ZRAM?)"
+        exit 0
+    fi
+    if grep -q '^/dev/zram0 ' /proc/swaps 2>/dev/null; then
+        echo "zram-swap: already active"
+        return 0
+    fi
+
+    total_kb=$(awk '/^MemTotal:/{print $2}' /proc/meminfo)
+    size=$(( total_kb * 1024 * FRACTION / 100 ))
+
+    # Prefer lzo-rle (fast, good ratio); fall back to lzo if unsupported.
+    echo lzo-rle > /sys/block/zram0/comp_algorithm 2>/dev/null || \
+        echo lzo > /sys/block/zram0/comp_algorithm 2>/dev/null
+
+    echo "$size" > /sys/block/zram0/disksize
+    mkswap "$ZRAM_DEV" >/dev/null 2>&1
+    # High priority so the kernel prefers zram over any disk swap.
+    swapon -p 100 "$ZRAM_DEV" || { echo "zram-swap: swapon failed"; return 1; }
+
+    # zram is fast RAM, so swap to it aggressively.
+    echo 100 > /proc/sys/vm/swappiness 2>/dev/null
+    echo "zram-swap: on ($(( size / 1024 / 1024 )) MiB compressed swap)"
+}
+
+stop() {
+    swapoff "$ZRAM_DEV" 2>/dev/null
+    echo 1 > /sys/block/zram0/reset 2>/dev/null
+    echo "zram-swap: off"
+}
+
+case "$1" in
+    start)   start ;;
+    stop)    stop ;;
+    restart) stop; sleep 1; start ;;
+    status)
+        if grep -q '^/dev/zram0 ' /proc/swaps 2>/dev/null; then
+            echo "zram-swap: active"; grep -E 'Filename|zram0' /proc/swaps
+        else
+            echo "zram-swap: inactive"
+        fi
+        ;;
+    *) echo "Usage: $0 {start|stop|restart|status}"; exit 1 ;;
+esac
