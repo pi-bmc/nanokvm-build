@@ -35,20 +35,30 @@ GO_APP_DIR = "${B}/src/${GO_IMPORT}"
 do_compile[cleandirs] = "${B}/bin ${B}/pkg"
 
 do_compile() {
-    cd ${GO_APP_DIR}
+    cd ${GO_APP_DIR} || bbfatal "go module dir ${GO_APP_DIR} not found"
 
-    export GOFLAGS="-mod=mod"
+    # Mirror the Makefile's canonical build. Its `app` target additionally runs
+    # `generate` (templ + the local tailwindcss tool) and `format`
+    # (golangci-lint), which need extra tooling/Docker -- but the generated code
+    # (server/templates/*_templ.go, server/assets/css/output.css) is committed
+    # upstream and go:embed'd, so the underlying `dist/*/...` go-build targets
+    # alone reproduce the binaries:
+    #   CGO_ENABLED=0 GOOS=linux GOARCH=riscv64 go build -o <out> ./cmd/<x>
+    # GOOS/GOARCH come from go.bbclass; CGO is off (pure Go, no cvitek libs).
     export CGO_ENABLED="0"
+    # go.mod requires Go 1.25.x but poky ships 1.22; auto-fetch the toolchain.
     export GOTOOLCHAIN="auto"
     export GOSUMDB="sum.golang.org"
-    # GOARCH/GOOS, GOPROXY and the module cache come from go.bbclass/go-mod.bbclass.
+    # -mod=mod tolerates an out-of-date go.sum; -modcacherw keeps the (otherwise
+    # read-only) module/toolchain cache writable so cleandirs/rm can remove it.
+    export GOFLAGS="-mod=mod"
 
-    # Stamp the version the way the goreleaser build does (main.version/commit/date).
-    LDFLAGS="-s -w -X main.version=${PV} -X main.date=reproducible"
-
-    ${GO} build -v -trimpath -ldflags "${LDFLAGS}" -o ${B}/NanoKVM-Server ./cmd/server
-    ${GO} build -v -trimpath -ldflags "-s -w"       -o ${B}/rpiboot       ./cmd/rpiboot
-    ${GO} build -v -trimpath -ldflags "-s -w"       -o ${B}/fw_env        ./cmd/fw_env
+    for cmd in server rpiboot fw_env; do
+        out="NanoKVM-Server"
+        [ "$cmd" = server ] || out="$cmd"
+        ${GO} build -v -trimpath -modcacherw -ldflags "-s -w" \
+            -o ${B}/$out ./cmd/$cmd
+    done
 
     # Keep the module cache (incl. the read-only downloaded toolchain) writable
     # so bitbake/rm can clean ${B} later.
