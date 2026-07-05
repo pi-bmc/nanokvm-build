@@ -44,6 +44,9 @@ IMAGE_INSTALL:append = " \
 
 # --- Network core ---
 IMAGE_INSTALL:append = " \
+    nanokvm-network \
+    busybox-udhcpc \
+    iputils-arping \
     ntp \
     avahi-daemon \
     lldpd \
