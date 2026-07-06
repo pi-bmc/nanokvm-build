@@ -11,7 +11,11 @@
 # NOTE: each wic .wks directive must be on a single line - the parser
 # shlex-splits each line individually and does not support backslash
 # continuations (a trailing '\' raises "No escaped character").
+#
+# --ondisk must be "mmcblk0" (not "mmcblk"): wic derives the /etc/fstab device
+# name from it, so "mmcblk" yields "/dev/mmcblkp1" (a non-existent node) and the
+# /boot mount silently fails. "mmcblk0" yields the correct "/dev/mmcblk0p1".
 
 bootloader --ptable msdos
-part /boot --source bootimg-partition --ondisk mmcblk --fstype msdos --label BOOT --active --align 1024 --size 81920K
-part / --source rootfs --ondisk mmcblk --fstype ext4 --label rootfs --align 1024 --size 1638400K
+part /boot --source bootimg-partition --ondisk mmcblk0 --fstype msdos --label BOOT --active --align 1024 --size 81920K
+part / --source rootfs --ondisk mmcblk0 --fstype ext4 --label rootfs --align 1024 --size 1638400K

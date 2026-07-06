@@ -169,6 +169,7 @@ IMAGE_INSTALL:append = " \
 # --- NanoKVM application ---
 IMAGE_INSTALL:append = " \
     nanokvm-server \
+    nanokvm-gadget \
     i2c-eeprom \
     ipmi-sim \
     openipmi \
@@ -181,6 +182,13 @@ IMAGE_ROOTFS_EXTRA_SPACE = "65536"
 # --- SD card image via WKS ---
 WKS_FILE = "nanokvm-sd.wks"
 do_image_wic[depends] += "fsbl:do_deploy u-boot-sophgo:do_deploy linux-sophgo:do_deploy"
+
+# --- Boot-partition config files ---
+# nanokvm-gadget deploys these to DEPLOY_DIR_IMAGE; wic's bootimg-partition puts
+# them on the FAT boot partition next to fip.bin/boot.sd. Read at runtime from
+# /boot by the USB gadget init (S03usbdev) and the app.
+IMAGE_BOOT_FILES:append = " board hostname.prefix ver usb.disk0 usb.keyboard usb.mouse usb.rndis0"
+do_image_wic[depends] += "nanokvm-gadget:do_deploy"
 
 # --- Publish under the original LicheeRV-Nano-Build image name ---
 # The upstream build emitted ${BOARD_SHORT}-${VARIANT}_${STORAGE_TYPE}.img.xz =
