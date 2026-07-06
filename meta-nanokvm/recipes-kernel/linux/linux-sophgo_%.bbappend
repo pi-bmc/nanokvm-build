@@ -53,15 +53,16 @@ do_configure:append:sg2002-licheervnano() {
         echo "CONFIG_ARCH_CV181X_ASIC=y" >> "${cfg}"
     fi
 
-    # Reclaim the SDIO1 pads for the eMMC emulator (recipes-kernel/emmc-emu):
-    # disable the SDIO1 WiFi *host* controller so the cvitek sdhci driver never
-    # probes wifisd@4320000 and never power-sequences or re-muxes those pads.
-    # Appending a label override is robust across the AUTOREV kernel SRCREV.
+    # Reclaim the SDIO1 pads for I2C1 (the I2C slave EEPROM, recipes-core/
+    # i2c-eeprom): disable the SDIO1 WiFi *host* controller so the cvitek sdhci
+    # driver never probes wifisd@4320000 and never power-sequences or re-muxes
+    # those pads out from under the I2C1 pinmux. Appending a label override is
+    # robust across the AUTOREV kernel SRCREV.
     dts="${S}/arch/riscv/boot/dts/cvitek/sg2002_licheervnano_sd.dts"
-    if [ -f "${dts}" ] && ! grep -q 'emmc-emu pad reclaim' "${dts}"; then
+    if [ -f "${dts}" ] && ! grep -q 'i2c1 pad reclaim' "${dts}"; then
         cat >> "${dts}" <<'EOF'
 
-/* emmc-emu pad reclaim: SDIO1 WiFi host disabled, pads driven by emmc_emu */
+/* i2c1 pad reclaim: SDIO1 WiFi host disabled; SD1_D3/D0 pads used as I2C1 */
 &wifisd {
 	status = "disabled";
 };

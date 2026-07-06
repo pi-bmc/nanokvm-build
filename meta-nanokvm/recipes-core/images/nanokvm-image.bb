@@ -6,7 +6,7 @@ inherit core-image
 # Use the plain packagegroup-base (not -extended): -extended unconditionally
 # RDEPENDS packagegroup-base-wifi -> wireless-regdb-static and would drag in
 # wireless kernel modules. WiFi is intentionally absent from this image (the
-# SDIO1 WiFi function is repurposed by the eMMC emulator), so packagegroup-base
+# SDIO1 pads are repurposed as I2C1 for the I2C slave EEPROM), so packagegroup-base
 # pulls the wifi subgroup only when MACHINE_FEATURES advertises it -- it does not.
 CORE_IMAGE_BASE_INSTALL = "packagegroup-core-boot packagegroup-base"
 
@@ -70,8 +70,8 @@ IMAGE_INSTALL:append = " \
     "
 
 # --- WiFi ---
-# Intentionally none. The SDIO1 WiFi function is repurposed by the eMMC
-# emulator (recipes-kernel/emmc-emu), so no wifi driver, stack, or userspace is
+# Intentionally none. The SDIO1 pads are repurposed as I2C1 for the I2C slave
+# EEPROM (recipes-core/i2c-eeprom), so no wifi driver, stack, or userspace is
 # installed (no wpa-supplicant/hostapd/iw/wireless-regdb; CFG80211/AIC_WLAN off
 # in the kernel defconfig; the wifisd DT node is disabled by the linux bbappend).
 
@@ -169,6 +169,7 @@ IMAGE_INSTALL:append = " \
 # --- NanoKVM application ---
 IMAGE_INSTALL:append = " \
     nanokvm-server \
+    i2c-eeprom \
     ipmi-sim \
     openipmi \
     "
