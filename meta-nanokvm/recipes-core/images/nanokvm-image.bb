@@ -156,13 +156,14 @@ IMAGE_INSTALL:append = " \
     "
 
 # --- Sophgo SDK ---
+# The closed-source multimedia/AI stack (sophgo-middleware, cvi-rtsp, osdrv,
+# maix-cdk, sg2002-codec-firmware) is intentionally removed: it ships proprietary
+# ISP tuning blobs and CLOSED-licensed cvitek kernel modules (VI/VPSS/VENC/ISP/
+# TPU), and the pure-Go app does not link or exec it. This drops hardware HDMI
+# capture / RTSP streaming; only the open-source BMC path remains. What stays are
+# the non-video vendor bits: axp2101 (PMU power management) and cvi-pinmux.
 IMAGE_INSTALL:append = " \
-    sophgo-middleware \
-    cvi-rtsp \
-    osdrv \
     cvi-pinmux \
-    maix-cdk \
-    sg2002-codec-firmware \
     axp2101 \
     "
 

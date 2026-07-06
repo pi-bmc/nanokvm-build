@@ -3,11 +3,7 @@ LICENSE = "CLOSED"
 
 # The FIP bundles the FSBL (BL2), OpenSBI (MONITOR/fw_dynamic) and U-Boot
 # (LOADER_2ND / BL33), so both must be built and staged first.
-# cvitek-thead-toolchain-native provides the T-Head GCC needed to assemble the
-# C906 vendor CSRs/instructions in the FSBL BL2.
-DEPENDS = "opensbi-sophgo u-boot-sophgo python3-native cvitek-thead-toolchain-native"
-
-THEAD_TC_BIN = "${STAGING_DATADIR_NATIVE}/cvitek-thead-toolchain/bin"
+DEPENDS = "opensbi-sophgo u-boot-sophgo python3-native"
 
 FILESEXTRAPATHS:prepend := "${THISDIR}/files:"
 
@@ -31,8 +27,24 @@ FSBL_BOOT_CPU ?= "riscv"
 # compiled and BL2 fails to link.
 FSBL_DDR_CFG ?= "ddr3_1866_x16"
 
-# Use the T-Head vendor cross-compiler (not the OE rv64gc one) for the FSBL.
-EXTRA_OEMAKE = "CROSS_COMPILE=riscv64-unknown-linux-musl- \
+# Built with the standard OE cross GCC (mainline >= 13 has the T-Head scalar
+# vendor extensions), not the vendored T-Head 10.2 fork. What the FSBL actually
+# needs from the toolchain, and how mainline provides it:
+#   * `th.icache.iall` / `th.sync.i` mnemonics -> -march ..._xtheadcmo_xtheadsync
+#     (the sources use the old un-prefixed vendor spelling; sed'ed below);
+#   * the dcache range ops / sync.s are already raw `.long` encodings in
+#     cache.c — no toolchain support needed;
+#   * C906 M-mode CSRs by name (mxstatus/mhcr/mcor/mhint) — mainline gas has no
+#     vendor CSR names, so define them as assembler symbols (--defsym reaches
+#     the inline asm in .c files too). Values are from the C906 user manual and
+#     verified byte-identical against the vendor assembler's encodings.
+# The vendor -march spelling rv64imafdcvxthead ('v' = pre-ratified RVV 0.7) is
+# replaced with rv64gc_xtheadcmo_xtheadsync: the FSBL uses no vector
+# instructions, and mainline 'v' would mean RVV 1.0, which the C906 lacks.
+THEAD_MARCH = "rv64gc_xtheadcmo_xtheadsync"
+THEAD_CSR_DEFSYMS = "-Wa,--defsym,mxstatus=0x7c0 -Wa,--defsym,mhcr=0x7c1 -Wa,--defsym,mcor=0x7c2 -Wa,--defsym,mhint=0x7c5"
+
+EXTRA_OEMAKE = "CROSS_COMPILE=${TARGET_PREFIX} \
                 CHIP_ARCH=${FSBL_CHIP_ARCH} \
                 BOARD=${FSBL_BOARD} \
                 BOOT_CPU=${FSBL_BOOT_CPU} \
@@ -41,19 +53,37 @@ EXTRA_OEMAKE = "CROSS_COMPILE=riscv64-unknown-linux-musl- \
 # The FSBL (ATF-style) invokes `ld` directly and inherits LDFLAGS from the
 # environment; OE's gcc-driver LDFLAGS (-Wl,-O1, ...) are rejected by ld. The
 # FSBL provides its own link flags, so clear the OE ones. Likewise the OE
-# CFLAGS/CPPFLAGS/ASFLAGS target the rv64gc toolchain, not the vendor one.
+# CFLAGS/CPPFLAGS/ASFLAGS carry the userspace tune, not the bare-metal one.
 LDFLAGS = ""
 CFLAGS = ""
 CPPFLAGS = ""
 ASFLAGS = ""
 TARGET_CC_ARCH = ""
 
+do_configure() {
+    # Mainline spellings for the vendor constructs (see comment above):
+    # -march (cpu.mk hardcodes the T-Head 10.2 spelling in ASFLAGS+TF_CFLAGS)
+    sed -i 's/rv64imafdcvxthead/${THEAD_MARCH}/g' ${S}/lib/cpu/riscv/cpu.mk
+    # cache-maintenance mnemonics grew a 'th.' prefix in the ratified spec /
+    # mainline binutils.
+    sed -i -e 's/"icache\.iall\\n"/"th.icache.iall\\n"/' \
+           -e 's/"sync\.i\\n"/"th.sync.i\\n"/' \
+        ${S}/lib/cpu/riscv/cpu_helper.c
+}
+
 # Need the deployed OpenSBI + U-Boot binaries before packing the FIP.
 do_compile[depends] += "opensbi-sophgo:do_deploy u-boot-sophgo:do_deploy"
 
 do_compile() {
-    # Build with the T-Head vendor GCC (C906 custom CSRs/instructions).
-    export PATH="${THEAD_TC_BIN}:${PATH}"
+    # cpu.mk appends (+=) to ASFLAGS / TF_CFLAGS, so seed them from the
+    # environment with the CSR defsyms. The C flags additionally pin down
+    # bare-metal codegen the vendor GCC defaulted to but OE's userspace GCC
+    # does not (default-PIE, stack protector).
+    export ASFLAGS="${THEAD_CSR_DEFSYMS}"
+    export TF_CFLAGS="${THEAD_CSR_DEFSYMS} -fno-pie -fno-stack-protector"
+    # A bare-metal BL2 legitimately has an RWX LOAD segment; binutils >= 2.39
+    # warns about it, and the FSBL links with --fatal-warnings.
+    export TF_LDFLAGS="--no-warn-rwx-segments"
 
     # The cvitek FSBL plat headers (plat/cv181x/include/mmap.h) include the
     # generated board memory map; place it where they can find it.

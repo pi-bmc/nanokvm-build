@@ -12,11 +12,12 @@ SRC_URI:append:sg2002-licheervnano = " \
 DEPENDS:append:sg2002-licheervnano = " u-boot-tools-native dtc-native"
 
 do_configure:prepend:sg2002-licheervnano() {
-    # Other recipes (sophgo-middleware/osdrv) run in-tree `make` against the
-    # SHARED kernel source (headers_install / modules_prepare), leaving generated
-    # files that make our out-of-tree (O=) configure abort with "The source tree
-    # is not clean, please run 'make mrproper'". Remove exactly what kbuild's
-    # outputmakefile target checks so the O= configure always starts clean.
+    # Belt-and-suspenders: any recipe that runs in-tree `make` against the SHARED
+    # kernel source (headers_install / modules_prepare) leaves generated files
+    # that make our out-of-tree (O=) configure abort with "The source tree is not
+    # clean, please run 'make mrproper'". (The former offenders sophgo-middleware/
+    # osdrv are now removed, but keep this cheap guard.) Remove exactly what
+    # kbuild's outputmakefile target checks so the O= configure always starts clean.
     rm -rf "${S}/.config" "${S}/include/config" "${S}/include/generated" \
            "${S}/arch/riscv/include/generated" 2>/dev/null || true
 
