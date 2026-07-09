@@ -1,0 +1,33 @@
+From: NanoKVM build <nbatkins@gmail.com>
+Date: Wed, 8 Jul 2026 00:00:00 +0000
+Subject: [PATCH] mmc: cv1800b_sdhci: honor 'no-1-8-v' DT property
+
+Backport of the upstream fix (merged after v2026.01). Without it, the SD
+card fails to initialize under U-Boot on 3.3V-only boards (LicheeRV Nano):
+sdhci_setup_cfg() re-adds UHS caps from the controller, U-Boot issues a
+1.8V switch the board can't do, and the card stops responding
+("Card did not respond to voltage select! : -110"). Setting
+SDHCI_QUIRK_NO_1_8_V masks the UHS caps so init proceeds at 3.3V.
+---
+diff --git a/drivers/mmc/cv1800b_sdhci.c b/drivers/mmc/cv1800b_sdhci.c
+index 036e798..0610185 100644
+--- a/drivers/mmc/cv1800b_sdhci.c
++++ b/drivers/mmc/cv1800b_sdhci.c
+@@ -98,6 +98,17 @@ static int cv1800b_sdhci_probe(struct udevice *dev)
+ 	if (ret)
+ 		return ret;
+ 
++	/*
++	 * sdhci_setup_cfg() re-adds the UHS (SDR104/SDR50/DDR50) caps from the
++	 * controller's CAPABILITIES_1 even when the DT says no-1-8-v; U-Boot then
++	 * issues CMD11 to switch to 1.8V, the card switches but the bus stays at
++	 * 3.3V, and the card wedges ("Card did not respond to voltage select!").
++	 * Mask the UHS caps out. Backport of upstream commit "mmc: cv1800b_sdhci:
++	 * honor 'no-1-8-v' DT property" (merged after v2026.01).
++	 */
++	if (dev_read_bool(dev, "no-1-8-v"))
++		host->quirks |= SDHCI_QUIRK_NO_1_8_V;
++
+ 	ret = sdhci_setup_cfg(&plat->cfg, host, 0, 200000);
+ 	if (ret)
+ 		return ret;

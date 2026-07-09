@@ -1,87 +1,47 @@
-# Supply the board defconfig. It originates from the sophgo-build submodule
-# (boards/sg200x/sg2002_licheervnano_sd/linux/) and is vendored into this layer
-# under files/ so the build does not depend on the submodule checkout.
+# NanoKVM board customisation for the mainline linux-sophgo kernel.
+#
+# The base recipe (meta-sophgo/recipes-kernel/linux/linux-sophgo_6.18.bb) builds
+# mainline v6.18 with the unified riscv `defconfig`. Here we:
+#   * backport the upstream cv18xx USB DTS node + enable it on nano-b,
+#   * merge the NanoKVM config-fragment delta (USB gadget, i2c-slave, ...),
+#   * wrap Image + board DTB into the cvitek-style FIT (boot.sd) that mainline
+#     U-Boot loads from the FAT boot partition.
 FILESEXTRAPATHS:prepend := "${THISDIR}/files:"
 
+# DTS backports for USB (v6.18 has the drivers but not the DT nodes). ORDER
+# matters -- applied by the base do_patch in SRC_URI order:
+#   0001 upstream "Add USB support for cv18xx": adds usb@4340000 (references
+#        &usbphy) to cv180x.dtsi, enables &usb on nano-b. Merged post-6.18-rc1.
+#   0002 companion backport: adds the sophgo,cv1800b-usb2-phy node (&usbphy,
+#        child of the top syscon) that 0001 references -- absent in v6.18, so
+#        without it dtc fails "Reference to non-existent node or label usbphy".
+#   0003 local board tweaks on top of 0001: &usb -> dr_mode "peripheral" (gadget
+#        role) and i2c1 on the repurposed SDIO1 pads for the slave EEPROM.
+# nanokvm.cfg is merged in do_configure:append below; boot.its is consumed by
+# do_deploy:append to build the boot.sd FIT.
 SRC_URI:append:sg2002-licheervnano = " \
-    file://sg2002_licheervnano_sd_defconfig \
+    file://0001-apply-dts-usb-dev.patch \
+    file://0002-riscv-dts-sophgo-add-cv1800b-usb2-phy.patch \
+    file://0003-nanokvm-board-dts.patch \
+    file://nanokvm.cfg \
     file://boot.its \
     "
 
 # mkimage (FIT support) and dtc are needed to build the boot.sd FIT image.
 DEPENDS:append:sg2002-licheervnano = " u-boot-tools-native dtc-native"
 
-do_configure:prepend:sg2002-licheervnano() {
-    # Belt-and-suspenders: any recipe that runs in-tree `make` against the SHARED
-    # kernel source (headers_install / modules_prepare) leaves generated files
-    # that make our out-of-tree (O=) configure abort with "The source tree is not
-    # clean, please run 'make mrproper'". (The former offenders sophgo-middleware/
-    # osdrv are now removed, but keep this cheap guard.) Remove exactly what
-    # kbuild's outputmakefile target checks so the O= configure always starts clean.
-    rm -rf "${S}/.config" "${S}/include/config" "${S}/include/generated" \
-           "${S}/arch/riscv/include/generated" 2>/dev/null || true
-
-    if [ ! -f "${S}/arch/riscv/configs/sg2002_licheervnano_sd_defconfig" ]; then
-        install -d "${S}/arch/riscv/configs"
-        install -m 0644 "${WORKDIR}/sg2002_licheervnano_sd_defconfig" \
-            "${S}/arch/riscv/configs/"
-    fi
-}
-
-KBUILD_DEFCONFIG:sg2002-licheervnano = "sg2002_licheervnano_sd_defconfig"
-
-# The board defconfig is applied by the base do_configure (KBUILD_DEFCONFIG), but
-# kconfig's olddefconfig re-resolves a few symbols to their Kconfig defaults,
-# diverging from what the board needs. Re-merge the defconfig and then force the
-# diverging symbols as the LAST step (no olddefconfig afterwards) so do_compile's
-# syncconfig preserves these explicit values.
+# Merge the NanoKVM fragment on top of the mainline defconfig. Plain `inherit
+# kernel` (not kernel-yocto) does not auto-apply .cfg fragments, so do it here;
+# do_compile's syncconfig then resolves dependencies.
 do_configure:append:sg2002-licheervnano() {
-    cfg="${B}/.config"
-    defcfg="${S}/arch/riscv/configs/sg2002_licheervnano_sd_defconfig"
-
-    # ARCH_CVITEK is the SoC platform option; cvitek-modified kernel code needs
-    # it (e.g. the unguarded 'addr' use in drivers/of/of_reserved_mem.c). The
-    # symbol is defined twice in this kernel's Kconfig, so olddefconfig can drop
-    # it -- ensure it is set, re-merge the defconfig to restore its sub-options,
-    # then resolve dependencies once.
-    if ! grep -q "^CONFIG_ARCH_CVITEK=y" "${cfg}"; then
-        echo "CONFIG_ARCH_CVITEK=y" >> "${cfg}"
-    fi
-    "${S}/scripts/kconfig/merge_config.sh" -m -O "${B}" "${cfg}" "${defcfg}"
+    "${S}/scripts/kconfig/merge_config.sh" -m -O "${B}" \
+        "${B}/.config" "${WORKDIR}/nanokvm.cfg"
     oe_runmake -C ${S} O=${B} olddefconfig
-
-    # Final overrides (olddefconfig reverts these to Kconfig defaults):
-    #  * the "platform of SoC" choice defaults to FPGA, but SG2002 is an ASIC;
-    #  * CONFIG_COMPAT defaults to y, but riscv 5.10 has no
-    #    arch_compat_alloc_user_space (vmlinux link fails) and the board runs a
-    #    64-bit-only musl userspace, so 32-bit compat is unused.
-    sed -i -e 's/^CONFIG_ARCH_CV181X_FPGA=y/# CONFIG_ARCH_CV181X_FPGA is not set/' \
-           -e 's/^CONFIG_ARCH_CV181X_PALLADIUM=y/# CONFIG_ARCH_CV181X_PALLADIUM is not set/' \
-           -e 's/^CONFIG_COMPAT=y/# CONFIG_COMPAT is not set/' "${cfg}"
-    if ! grep -q '^CONFIG_ARCH_CV181X_ASIC=y' "${cfg}"; then
-        echo "CONFIG_ARCH_CV181X_ASIC=y" >> "${cfg}"
-    fi
-
-    # Reclaim the SDIO1 pads for I2C1 (the I2C slave EEPROM, recipes-core/
-    # i2c-eeprom): disable the SDIO1 WiFi *host* controller so the cvitek sdhci
-    # driver never probes wifisd@4320000 and never power-sequences or re-muxes
-    # those pads out from under the I2C1 pinmux. Appending a label override is
-    # robust across the AUTOREV kernel SRCREV.
-    dts="${S}/arch/riscv/boot/dts/cvitek/sg2002_licheervnano_sd.dts"
-    if [ -f "${dts}" ] && ! grep -q 'i2c1 pad reclaim' "${dts}"; then
-        cat >> "${dts}" <<'EOF'
-
-/* i2c1 pad reclaim: SDIO1 WiFi host disabled; SD1_D3/D0 pads used as I2C1 */
-&wifisd {
-	status = "disabled";
-};
-EOF
-    fi
 }
 
 # Build the cvitek-style FIT boot image (boot.sd) and deploy it so wic can place
-# it in the FAT boot partition (IMAGE_BOOT_FILES = "fip.bin boot.sd"). This
-# replaces the sophgo-build "make boot" step which produced boot.itb -> boot.sd.
+# it on the FAT boot partition (IMAGE_BOOT_FILES = "fip.bin boot.sd"). Mainline
+# builds the DTB as sophgo/sg2002-licheerv-nano-b.dtb.
 do_deploy:append:sg2002-licheervnano() {
     fit_work="${WORKDIR}/boot-fit"
     rm -rf "${fit_work}"
@@ -92,9 +52,9 @@ do_deploy:append:sg2002-licheervnano() {
     if [ ! -f "${kimage}" ]; then
         kimage="$(find ${B} -path '*/arch/riscv/boot/Image' -type f 2>/dev/null | head -1)"
     fi
-    kdtb="$(find ${B} -name 'sg2002_licheervnano_sd.dtb' -type f 2>/dev/null | head -1)"
+    kdtb="$(find ${B} -name 'sg2002-licheerv-nano-b.dtb' -type f 2>/dev/null | head -1)"
     if [ -z "${kdtb}" ]; then
-        kdtb="$(find ${DEPLOYDIR} -name 'sg2002_licheervnano_sd.dtb' -type f 2>/dev/null | head -1)"
+        kdtb="$(find ${DEPLOYDIR} -name 'sg2002-licheerv-nano-b.dtb' -type f 2>/dev/null | head -1)"
     fi
 
     if [ ! -f "${kimage}" ] || [ -z "${kdtb}" ] || [ ! -f "${kdtb}" ]; then
@@ -102,7 +62,7 @@ do_deploy:append:sg2002-licheervnano() {
     fi
 
     install -m 0644 "${kimage}" "${fit_work}/Image"
-    install -m 0644 "${kdtb}" "${fit_work}/sg2002_licheervnano_sd.dtb"
+    install -m 0644 "${kdtb}" "${fit_work}/sg2002-licheerv-nano-b.dtb"
     install -m 0644 "${WORKDIR}/boot.its" "${fit_work}/boot.its"
 
     ( cd "${fit_work}" && mkimage -f boot.its boot.sd )

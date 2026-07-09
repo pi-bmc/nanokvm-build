@@ -12,6 +12,7 @@ SRC_URI = " \
     file://S01fs \
     file://S03usbdev \
     file://board \
+    file://extlinux.conf \
     file://hostname.prefix \
     file://usb.disk0 \
     file://usb.keyboard \
@@ -41,7 +42,7 @@ do_install() {
 # so deploy them to DEPLOY_DIR_IMAGE for wic's IMAGE_BOOT_FILES.
 do_deploy() {
     install -d ${DEPLOYDIR}
-    for f in board hostname.prefix usb.disk0 usb.keyboard usb.mouse usb.rndis0; do
+    for f in board hostname.prefix usb.disk0 usb.keyboard usb.mouse usb.rndis0 extlinux.conf; do
         install -m 0644 ${WORKDIR}/$f ${DEPLOYDIR}/$f
     done
     # Firmware version string (no build timestamp -> reproducible).

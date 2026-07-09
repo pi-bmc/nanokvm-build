@@ -1,0 +1,43 @@
+From: NanoKVM build <nbatkins@gmail.com>
+Date: Tue, 8 Jul 2026 00:00:00 +0000
+Subject: [PATCH] riscv: dts: sophgo: add cv1800b usb2-phy (backport for v6.18)
+
+Companion to the upstream "Add USB support for cv18xx" series. v6.18 ships the
+dwc2 glue (sophgo,cv1800b-usb -> dwc2_set_cv1800_params) and the PHY driver
+(drivers/phy/sophgo/phy-cv1800-usb2.c, sophgo,cv1800b-usb2-phy), and defines the
+clocks/resets, but not the DT nodes. 0001-apply-dts-usb-dev.patch adds
+usb@4340000 which references &usbphy; add that PHY node (a child of the top
+syscon, as the driver expects a syscon parent) so the tree resolves and USB has
+its PHY. Not needed once the kernel is bumped to a release that carries these
+nodes (>= v6.19).
+---
+diff --git a/arch/riscv/boot/dts/sophgo/cv180x.dtsi b/arch/riscv/boot/dts/sophgo/cv180x.dtsi
+index ccdb454..34e260c 100644
+--- a/arch/riscv/boot/dts/sophgo/cv180x.dtsi
++++ b/arch/riscv/boot/dts/sophgo/cv180x.dtsi
+@@ -25,6 +25,25 @@
+ 		#size-cells = <1>;
+ 		ranges;
+ 
++		syscon: syscon@3000000 {
++			compatible = "sophgo,cv1800b-top-syscon",
++				     "syscon", "simple-mfd";
++			reg = <0x03000000 0x1000>;
++			#address-cells = <1>;
++			#size-cells = <1>;
++
++			usbphy: phy@48 {
++				compatible = "sophgo,cv1800b-usb2-phy";
++				reg = <0x48 0x4>;
++				#phy-cells = <0>;
++				clocks = <&clk CLK_USB_125M>,
++					 <&clk CLK_USB_33K>,
++					 <&clk CLK_USB_12M>;
++				clock-names = "app", "stb", "lpm";
++				resets = <&rst RST_COMBO_PHY0>;
++			};
++		};
++
+ 		rst: reset-controller@3003000 {
+ 			compatible = "sophgo,cv1800b-reset";
+ 			reg = <0x3003000 0x1000>;

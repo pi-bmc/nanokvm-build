@@ -3,7 +3,7 @@ LICENSE = "CLOSED"
 
 # The FIP bundles the FSBL (BL2), OpenSBI (MONITOR/fw_dynamic) and U-Boot
 # (LOADER_2ND / BL33), so both must be built and staged first.
-DEPENDS = "opensbi-sophgo u-boot-sophgo python3-native"
+DEPENDS = "opensbi u-boot python3-native"
 
 FILESEXTRAPATHS:prepend := "${THISDIR}/files:"
 
@@ -72,7 +72,7 @@ do_configure() {
 }
 
 # Need the deployed OpenSBI + U-Boot binaries before packing the FIP.
-do_compile[depends] += "opensbi-sophgo:do_deploy u-boot-sophgo:do_deploy"
+do_compile[depends] += "opensbi:do_deploy u-boot:do_deploy"
 
 do_compile() {
     # cpu.mk appends (+=) to ASFLAGS / TF_CFLAGS, so seed them from the
@@ -96,8 +96,29 @@ do_compile() {
     install -m 0644 "${DEPLOY_DIR_IMAGE}/fw_dynamic.bin" \
         "${WORKDIR}/opensbi/build/platform/generic/firmware/fw_dynamic.bin"
 
+    # Mainline u-boot.bin carries no cvitek loader_2nd ("BL33") head, which
+    # fiptool requires (magic check) and BL2 relies on for placement: BL2 loads
+    # header+image at RUNADDR and enters at RUNADDR + 0x20 (the header size),
+    # so RUNADDR must be TEXT_BASE - 0x20 for U-Boot to land on its link
+    # address. fiptool recomputes the CKSUM/SIZE fields, so zeros suffice.
+    python3 - "${DEPLOY_DIR_IMAGE}/u-boot.bin" "${WORKDIR}/u-boot-bl33.bin" <<'EOF'
+import struct, sys
+TEXT_BASE = 0x80200000  # CONFIG_TEXT_BASE, sipeed_licheerv_nano_defconfig
+hdr = struct.pack(
+    "<I4sIIQII",
+    0x0001a005,          # JUMP0: c.j/c.nop; never executed (entry skips header)
+    b"BL33",             # MAGIC
+    0, 0,                # CKSUM, SIZE: filled in by fiptool
+    TEXT_BASE - 0x20,    # RUNADDR
+    0, 0)                # reserved
+with open(sys.argv[1], "rb") as f:
+    body = f.read()
+with open(sys.argv[2], "wb") as f:
+    f.write(hdr + body)
+EOF
+
     # Build the FSBL (BL2) and pack the FIP with U-Boot as the 2nd-stage loader.
-    oe_runmake -C ${S} all LOADER_2ND_PATH="${DEPLOY_DIR_IMAGE}/u-boot.bin"
+    oe_runmake -C ${S} all LOADER_2ND_PATH="${WORKDIR}/u-boot-bl33.bin"
 }
 
 do_install() {

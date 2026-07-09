@@ -182,13 +182,14 @@ IMAGE_ROOTFS_EXTRA_SPACE = "65536"
 
 # --- SD card image via WKS ---
 WKS_FILE = "nanokvm-sd.wks"
-do_image_wic[depends] += "fsbl:do_deploy u-boot-sophgo:do_deploy linux-sophgo:do_deploy"
+do_image_wic[depends] += "fsbl:do_deploy linux-sophgo:do_deploy"
 
 # --- Boot-partition config files ---
 # nanokvm-gadget deploys these to DEPLOY_DIR_IMAGE; wic's bootimg-partition puts
 # them on the FAT boot partition next to fip.bin/boot.sd. Read at runtime from
-# /boot by the USB gadget init (S03usbdev) and the app.
-IMAGE_BOOT_FILES:append = " board hostname.prefix ver usb.disk0 usb.keyboard usb.mouse usb.rndis0"
+# /boot by the USB gadget init (S03usbdev) and the app. extlinux.conf is the
+# mainline U-Boot boot menu (sysboot/distro boot scans /extlinux/extlinux.conf).
+IMAGE_BOOT_FILES:append = " board hostname.prefix ver usb.disk0 usb.keyboard usb.mouse usb.rndis0 extlinux.conf;extlinux/extlinux.conf"
 do_image_wic[depends] += "nanokvm-gadget:do_deploy"
 
 # --- Publish under the original LicheeRV-Nano-Build image name ---

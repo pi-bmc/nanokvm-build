@@ -1,0 +1,55 @@
+From: NanoKVM build <nbatkins@gmail.com>
+Date: Tue, 8 Jul 2026 00:00:00 +0000
+Subject: [PATCH] riscv: dts: sophgo: nanokvm board tweaks (usb peripheral, i2c1)
+
+NanoKVM board customisation, applied on top of the upstream USB backport
+(0001-apply-dts-usb-dev.patch):
+
+  * USB: the upstream node defaults nano-b to dr_mode = "host", but the
+    NanoKVM BMC role needs the gadget stack (HID / mass-storage / RNDIS /
+    UVC to the managed machine), so switch it to "peripheral".
+
+  * I2C1: enable i2c1@4010000 and repurpose two SDIO1 pads as its bus
+    (SD1_D3 -> IIC1_SCL, SD1_D0 -> IIC1_SDA, both pad funcsel 2). This is
+    the mainline replacement for the vendor devmem pinmux hack; the
+    recipes-core/i2c-eeprom service then registers the i2c-slave-eeprom
+    backend on this controller.
+
+Not upstream — local to this build.
+---
+ arch/riscv/boot/dts/sophgo/sg2002-licheerv-nano-b.dts | 23 +++++++++++++++++--
+ 1 file changed, 21 insertions(+), 2 deletions(-)
+
+diff --git a/arch/riscv/boot/dts/sophgo/sg2002-licheerv-nano-b.dts b/arch/riscv/boot/dts/sophgo/sg2002-licheerv-nano-b.dts
+index b185377..394cfbf 100644
+--- a/arch/riscv/boot/dts/sophgo/sg2002-licheerv-nano-b.dts
++++ b/arch/riscv/boot/dts/sophgo/sg2002-licheerv-nano-b.dts
+@@ -95,6 +95,27 @@
+ };
+
+ &usb {
+-	dr_mode = "host";
++	dr_mode = "peripheral";
++	status = "okay";
++};
++
++&pinctrl {
++	i2c1_cfg: i2c1-cfg {
++		i2c1-pins {
++			/* SDIO1 pads repurposed as I2C1 for the slave EEPROM
++			 * (recipes-core/i2c-eeprom): SD1_D3->IIC1_SCL,
++			 * SD1_D0->IIC1_SDA, both funcsel 2. */
++			pinmux = <PINMUX(PIN_SD1_D3, 2)>,
++				 <PINMUX(PIN_SD1_D0, 2)>;
++			bias-pull-up;
++			drive-strength-microamp = <10800>;
++			power-source = <3300>;
++		};
++	};
++};
++
++&i2c1 {
++	pinctrl-0 = <&i2c1_cfg>;
++	pinctrl-names = "default";
+ 	status = "okay";
+ };

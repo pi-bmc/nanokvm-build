@@ -1,0 +1,87 @@
+From e307248a3c2df4432a7bbbde306ffcb33ec55898 Mon Sep 17 00:00:00 2001
+From: Longbin Li <looong.bin@gmail.com>
+Date: Sat, 1 Nov 2025 09:43:23 +0800
+Subject: [PATCH] riscv: dts: sophgo: Add USB support for cv18xx
+
+Add USB controller node for cv18xx and enable it for Huashan Pi, milkv-duo.
+
+Co-developed-by: Inochi Amaoto <inochiama@gmail.com>
+Signed-off-by: Longbin Li <looong.bin@gmail.com>
+Tested-by: Alexander Sverdlin <alexander.sverdlin@gmail.com>
+Link: https://lore.kernel.org/r/20251101014329.18439-4-looong.bin@gmail.com
+Signed-off-by: Inochi Amaoto <inochiama@gmail.com>
+Signed-off-by: Chen Wang <unicorn_wang@outlook.com>
+Signed-off-by: Chen Wang <wangchen20@iscas.ac.cn>
+---
+ arch/riscv/boot/dts/sophgo/cv1800b-milkv-duo.dts |  5 +++++
+ arch/riscv/boot/dts/sophgo/cv180x.dtsi           | 16 ++++++++++++++++
+ .../riscv/boot/dts/sophgo/cv1812h-huashan-pi.dts |  5 +++++
+ .../boot/dts/sophgo/sg2002-licheerv-nano-b.dts   |  5 +++++
+ 4 files changed, 31 insertions(+)
+
+diff --git a/arch/riscv/boot/dts/sophgo/cv1800b-milkv-duo.dts b/arch/riscv/boot/dts/sophgo/cv1800b-milkv-duo.dts
+index 9feb520eaec41b..0e6d79e6e3a4aa 100644
+--- a/arch/riscv/boot/dts/sophgo/cv1800b-milkv-duo.dts
++++ b/arch/riscv/boot/dts/sophgo/cv1800b-milkv-duo.dts
+@@ -100,3 +100,8 @@
+ 	pinctrl-names = "default";
+ 	status = "okay";
+ };
++
++&usb {
++	dr_mode = "host";
++	status = "okay";
++};
+diff --git a/arch/riscv/boot/dts/sophgo/cv180x.dtsi b/arch/riscv/boot/dts/sophgo/cv180x.dtsi
+index 42303acb2b3965..1b2b1969a6484e 100644
+--- a/arch/riscv/boot/dts/sophgo/cv180x.dtsi
++++ b/arch/riscv/boot/dts/sophgo/cv180x.dtsi
+@@ -432,6 +432,22 @@
+ 			status = "disabled";
+ 		};
+ 
++		usb: usb@4340000 {
++			compatible = "sophgo,cv1800b-usb";
++			reg = <0x04340000 0x10000>;
++			clocks = <&clk CLK_AXI4_USB>, <&clk CLK_APB_USB>;
++			clock-names = "otg", "utmi";
++			g-np-tx-fifo-size = <32>;
++			g-rx-fifo-size = <536>;
++			g-tx-fifo-size = <768 512 512 384 128 128>;
++			interrupts = <SOC_PERIPHERAL_IRQ(14) IRQ_TYPE_LEVEL_HIGH>;
++			phys = <&usbphy>;
++			phy-names = "usb2-phy";
++			resets = <&rst RST_USB>;
++			reset-names = "dwc2";
++			status = "disabled";
++		};
++
+ 		rtc@5025000 {
+ 			compatible = "sophgo,cv1800b-rtc", "syscon";
+ 			reg = <0x5025000 0x2000>;
+diff --git a/arch/riscv/boot/dts/sophgo/cv1812h-huashan-pi.dts b/arch/riscv/boot/dts/sophgo/cv1812h-huashan-pi.dts
+index 4a5835fa9e96f8..aedf79f474071f 100644
+--- a/arch/riscv/boot/dts/sophgo/cv1812h-huashan-pi.dts
++++ b/arch/riscv/boot/dts/sophgo/cv1812h-huashan-pi.dts
+@@ -86,3 +86,8 @@
+ &uart0 {
+ 	status = "okay";
+ };
++
++&usb {
++	dr_mode = "host";
++	status = "okay";
++};
+diff --git a/arch/riscv/boot/dts/sophgo/sg2002-licheerv-nano-b.dts b/arch/riscv/boot/dts/sophgo/sg2002-licheerv-nano-b.dts
+index 86a712b953a5ac..b1853770d01788 100644
+--- a/arch/riscv/boot/dts/sophgo/sg2002-licheerv-nano-b.dts
++++ b/arch/riscv/boot/dts/sophgo/sg2002-licheerv-nano-b.dts
+@@ -93,3 +93,8 @@
+ 	pinctrl-names = "default";
+ 	status = "okay";
+ };
++
++&usb {
++	dr_mode = "host";
++	status = "okay";
++};

@@ -1,11 +1,11 @@
 /*
  * FIT image source for the NanoKVM SG2002 / LicheeRV Nano SD boot image.
  *
- * This mirrors the cvitek "boot" target output (sophgo-build multi.its with the
- * ramdisk node removed): a single kernel + single FDT, RISC-V, uncompressed
- * Image, load/entry at CONFIG_KERNEL_ENTRY_HACK_ADDR (0x80200000). The resulting
- * boot.itb is deployed as boot.sd into the FAT boot partition, where the cvitek
- * U-Boot loads it.
+ * A single kernel + single FDT, RISC-V, uncompressed Image, load/entry at
+ * 0x80200000 (2 MiB above the OpenSBI fw_dynamic base at 0x80000000). The
+ * resulting boot.itb is deployed as boot.sd into the FAT boot partition, where
+ * mainline U-Boot loads it (extlinux.conf -> KERNEL /boot.sd). The FDT is the
+ * mainline sophgo/sg2002-licheerv-nano-b.dtb.
  */
 
 /dts-v1/;
@@ -16,7 +16,7 @@
 
 	images {
 		kernel-1 {
-			description = "cvitek kernel";
+			description = "mainline kernel";
 			data = /incbin/("./Image");
 			type = "kernel";
 			arch = "riscv";
@@ -30,8 +30,8 @@
 		};
 
 		fdt-sg2002_licheervnano_sd {
-			description = "cvitek device tree - sg2002_licheervnano_sd";
-			data = /incbin/("./sg2002_licheervnano_sd.dtb");
+			description = "device tree - sg2002-licheerv-nano-b";
+			data = /incbin/("./sg2002-licheerv-nano-b.dtb");
 			type = "flat_dt";
 			arch = "riscv";
 			compression = "none";
@@ -45,7 +45,7 @@
 		default = "config-sg2002_licheervnano_sd";
 
 		config-sg2002_licheervnano_sd {
-			description = "boot cvitek system with board sg2002_licheervnano_sd";
+			description = "boot with board sg2002-licheerv-nano-b";
 			kernel = "kernel-1";
 			fdt = "fdt-sg2002_licheervnano_sd";
 		};
