@@ -118,7 +118,9 @@ start_usb_dev() {
         if [ -e /boot/BIOS ]; then
             echo 1 >functions/hid.GS0/subclass
         fi
-        if [ ! -e /boot/usb.notwakeup ]; then
+        # wakeup_on_write is a vendor (cvitek) f_hid attribute for HID remote
+        # wakeup; mainline f_hid has no such file, so only write it if present.
+        if [ ! -e /boot/usb.notwakeup ] && [ -e functions/hid.GS0/wakeup_on_write ]; then
             echo 1 >functions/hid.GS0/wakeup_on_write
         fi
         echo 1 >functions/hid.GS0/protocol
@@ -131,7 +133,7 @@ start_usb_dev() {
         if [ -e /boot/BIOS ]; then
             echo 1 >functions/hid.GS1/subclass
         fi
-        if [ ! -e /boot/usb.notwakeup ]; then
+        if [ ! -e /boot/usb.notwakeup ] && [ -e functions/hid.GS1/wakeup_on_write ]; then
             echo 1 >functions/hid.GS1/wakeup_on_write
         fi
         echo 2 >functions/hid.GS1/protocol
@@ -144,7 +146,7 @@ start_usb_dev() {
         if [ -e /boot/BIOS ]; then
             echo 1 >functions/hid.GS2/subclass
         fi
-        if [ ! -e /boot/usb.notwakeup ]; then
+        if [ ! -e /boot/usb.notwakeup ] && [ -e functions/hid.GS2/wakeup_on_write ]; then
             echo 1 >functions/hid.GS2/wakeup_on_write
         fi
         echo 2 >functions/hid.GS2/protocol
@@ -159,12 +161,17 @@ start_usb_dev() {
             ls /sys/class/udc/ | cat >UDC 2>/dev/null
         fi
     fi
-    echo device >/proc/cviusb/otg_role
+    # /proc/cviusb/otg_role is a vendor OTG role-switch. On mainline the dwc2
+    # controller is fixed by dr_mode="peripheral" (DTS), so there is nothing to
+    # switch; only write it on the vendor kernel where it exists.
+    [ -e /proc/cviusb/otg_role ] && echo device >/proc/cviusb/otg_role
 }
 
 start_usb_host() {
+    # Detach the gadget by clearing UDC. Host mode is not available at runtime on
+    # mainline (dr_mode="peripheral"); the vendor otg_role write is guarded.
     echo '' >/sys/kernel/config/usb_gadget/g0/UDC
-    echo host >/proc/cviusb/otg_role
+    [ -e /proc/cviusb/otg_role ] && echo host >/proc/cviusb/otg_role
 }
 
 restart_usb_dev() {

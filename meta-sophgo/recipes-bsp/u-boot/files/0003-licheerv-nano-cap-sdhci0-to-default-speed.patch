@@ -1,0 +1,31 @@
+From: NanoKVM build <nbatkins@gmail.com>
+Date: Wed, 8 Jul 2026 00:00:00 +0000
+Subject: [PATCH] riscv: dts: licheerv_nano: cap sdhci0 to 25 MHz for U-Boot
+
+U-Boot's cv1800b_sdhci programs the PHY tap-delay only during UHS tuning,
+which no-1-8-v disables. Its 50 MHz high-speed reads of the ~28 MB boot.sd
+FIT are therefore marginal and fail intermittently ("Invalid FAT entry",
+"Error reading cluster", "No partition table") even though the flashed
+media is byte-correct. Cap sdhci0 to default-speed 25 MHz for reliable
+reads. This is U-Boot's own DT copy, so the kernel's SD speed is unchanged.
+---
+diff --git a/arch/riscv/dts/sg2002-licheerv-nano-b.dts b/arch/riscv/dts/sg2002-licheerv-nano-b.dts
+index 9871a75..e7b549f 100644
+--- a/arch/riscv/dts/sg2002-licheerv-nano-b.dts
++++ b/arch/riscv/dts/sg2002-licheerv-nano-b.dts
+@@ -38,6 +38,15 @@
+ 	no-1-8-v;
+ 	no-mmc;
+ 	no-sdio;
++	/*
++	 * Cap to default-speed (25 MHz). U-Boot's cv1800b_sdhci only programs the
++	 * PHY TX/RX tap-delay during UHS tuning, which no-1-8-v disables, so its
++	 * 50 MHz high-speed reads of the large boot.sd FIT are marginal and fail
++	 * intermittently ("Invalid FAT entry" / "Error reading cluster"). The FSBL
++	 * reads the same card fine at low speed; the kernel sets the delay itself,
++	 * so this only affects U-Boot.
++	 */
++	max-frequency = <25000000>;
+ };
+ 
+ &uart0 {

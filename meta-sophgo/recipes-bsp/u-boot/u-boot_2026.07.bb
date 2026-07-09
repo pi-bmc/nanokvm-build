@@ -14,6 +14,7 @@ FILESEXTRAPATHS:prepend := "${THISDIR}/files:"
 SRC_URI = "git://source.denx.de/u-boot/u-boot.git;protocol=https;branch=master \
            file://0001-mmc-cv1800b-honor-no-1-8-v.patch \
            file://0002-licheerv-nano-raise-load-addrs.patch \
+           file://0003-licheerv-nano-cap-sdhci0-to-default-speed.patch \
            "
 # v2026.07
 SRCREV = "ece349ade2973e220f524ce59e59711cc919263f"
