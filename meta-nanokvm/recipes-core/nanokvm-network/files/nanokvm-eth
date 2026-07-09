@@ -69,7 +69,14 @@ start() {
             ip a add "$inet" brd + dev eth0
         } || exit 1
     else
-        udhcpc -i eth0 -t 10 -T 1 -A 5 -b -p /run/udhcpc.eth0.pid &
+        # Retry DHCP indefinitely. A managed switch (e.g. UniFi RSTP) can hold a
+        # freshly-linked port in listening/learning for tens of seconds before
+        # forwarding, and the internal EPHY link can flap, so the DISCOVERs sent
+        # during a short retry window get dropped and no lease is obtained. -t 0
+        # means unlimited DISCOVER retransmits (udhcpc never gives up); it is
+        # backgrounded with & because -t 0 never reaches the -b self-background
+        # path. Once a lease is obtained udhcpc keeps running to renew it.
+        udhcpc -i eth0 -t 0 -T 3 -p /run/udhcpc.eth0.pid &
     fi
 }
 

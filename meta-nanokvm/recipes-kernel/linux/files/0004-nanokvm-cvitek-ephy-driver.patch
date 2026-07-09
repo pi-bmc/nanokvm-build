@@ -1,0 +1,292 @@
+From: NanoKVM build <nbatkins@gmail.com>
+Date: Thu, 9 Jul 2026 00:00:00 +0000
+Subject: [PATCH] net: phy: add Sophgo/CVITEK CV18xx internal EPHY driver
+
+Add a phylib driver for the SG2002/CV18xx internal 100M Ethernet PHY that
+runs the analog receive bring-up (equalizer / MLT3 / link-pulse / AGC /
+CV181x LPF-HPF) at .config_init. U-Boot powers the EPHY up and the link
+trains (autoneg uses the separate link-pulse receiver), but with only the
+generic PHY driver the 100BASE-TX receive path is never tuned from Linux and
+no frames reach the dwmac (mmc_rx stays 0; MAC- and PHY-internal loopback
+both pass -- only line RX is dead). Matched by the PHY ID 0x00435649 that
+U-Boot programs into the EPHY. Ported from the CVITEK vendor 5.10 driver.
+
+Upstream-Status: Inappropriate [out-of-tree SoC vendor PHY port; upstream lacks a cv18xx internal-EPHY driver]
+Signed-off-by: NanoKVM build <nbatkins@gmail.com>
+---
+diff --git a/drivers/net/phy/Kconfig b/drivers/net/phy/Kconfig
+index 98700d069191..669aea1bf410 100644
+--- a/drivers/net/phy/Kconfig
++++ b/drivers/net/phy/Kconfig
+@@ -225,6 +225,14 @@ config CORTINA_PHY
+ 	help
+ 	  Currently supports the CS4340 phy.
+ 
++config CVITEK_PHY
++	tristate "Sophgo/CVITEK CV18xx internal Ethernet PHY"
++	help
++	  Supports the internal 100M Ethernet PHY (EPHY) in the Sophgo/CVITEK
++	  CV18xx / SG200x SoCs (SG2002 on the LicheeRV Nano / NanoKVM). Runs the
++	  analog receive bring-up at config_init so the 100BASE-TX RX path
++	  decodes line data; without it the generic PHY driver leaves RX dead.
++
+ config DAVICOM_PHY
+ 	tristate "Davicom PHYs"
+ 	help
+diff --git a/drivers/net/phy/Makefile b/drivers/net/phy/Makefile
+index 76e0db40f879..1687f218ed81 100644
+--- a/drivers/net/phy/Makefile
++++ b/drivers/net/phy/Makefile
+@@ -50,6 +50,7 @@ obj-$(CONFIG_BCM_NET_PHYPTP)	+= bcm-phy-ptp.o
+ obj-$(CONFIG_BROADCOM_PHY)	+= broadcom.o
+ obj-$(CONFIG_CICADA_PHY)	+= cicada.o
+ obj-$(CONFIG_CORTINA_PHY)	+= cortina.o
++obj-$(CONFIG_CVITEK_PHY)	+= cvitek.o
+ obj-$(CONFIG_DAVICOM_PHY)	+= davicom.o
+ obj-$(CONFIG_DP83640_PHY)	+= dp83640.o
+ obj-$(CONFIG_DP83822_PHY)	+= dp83822.o
+diff --git a/drivers/net/phy/cvitek.c b/drivers/net/phy/cvitek.c
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/drivers/net/phy/cvitek.c
+@@ -0,0 +1,239 @@
++// SPDX-License-Identifier: GPL-2.0-or-later
++/*
++ * Driver for the Sophgo / CVITEK CV18xx internal 100M Ethernet PHY (EPHY).
++ *
++ * The CV18xx family (CV1800B / CV181x / SG2002 -- LicheeRV Nano, NanoKVM)
++ * integrates a 10/100 Ethernet PHY behind the dwmac.  It exposes a standard
++ * clause-22 register interface (behind an mdio-mux), but its analog front end
++ * needs a full bring-up -- eFUSE TX trim, MLT3 shaping, link-pulse / TP_IDLE /
++ * 10BASE-T waveform tables, AGC and the CV181x RX LPF/HPF equalizer -- before
++ * the 100BASE-TX *receive* datapath will decode line data.
++ *
++ * U-Boot powers the block up and the link trains fine (autoneg uses the
++ * separate low-speed link-pulse receiver), but if only the generic PHY driver
++ * binds, the RX-equalizer bring-up never runs from Linux and no frames reach
++ * the MAC (mmc_rx counters stay 0; MAC- and PHY-internal loopback both pass,
++ * only line RX is dead).  This driver -- matched by the PHY ID 0x00435649 that
++ * U-Boot programs into the EPHY -- re-runs that bring-up at .config_init, in
++ * the correct phylib order relative to the MAC link state machine.
++ *
++ * Ported from the CVITEK vendor 5.10 driver drivers/net/phy/cvitek.c
++ * (cv182xa_phy_config_init), with the vendor cvi_efuse_read_from_shadow() API
++ * replaced by direct MMIO reads and the CV181x ("mars") RX equalizer values
++ * hardcoded (SG2002 is CV181x-class).  All register writes are transcribed
++ * verbatim from the vendor sequence.
++ */
++
++#include <linux/kernel.h>
++#include <linux/module.h>
++#include <linux/mii.h>
++#include <linux/phy.h>
++#include <linux/io.h>
++
++#define CVITEK_PHY_ID		0x00435649
++
++/* EPHY register windows (direct APB access while APB_RW_SEL = 1). */
++#define REG_EPHY_TOP_WRAP	0x03009800	/* CTL @ +0, APB_RW_SEL @ +4 */
++#define REG_EPHY_BASE		0x03009000	/* MII reg N at +N*4; page-sel at +0x7c */
++
++static int cvitek_ephy_config_init(struct phy_device *phydev)
++{
++	void __iomem *top, *base;
++
++	top = ioremap(REG_EPHY_TOP_WRAP, 0x8);
++	if (!top)
++		return -ENOMEM;
++	base = ioremap(REG_EPHY_BASE, 0x80);
++	if (!base) {
++		iounmap(top);
++		return -ENOMEM;
++	}
++
++	/*
++	 * Take APB control of the EPHY registers.  The power-up (release of
++	 * shutdown / dig_rst_n / ana_pd/en / ana_rst_n and the PHY-ID write) is
++	 * done by U-Boot board_init(); here we (re)apply the analog datapath
++	 * bring-up so the 100BASE-TX receive path decodes line data.
++	 */
++	writel(0x0001, top + 4);
++	writel(0x0500, base + 0x7c);		/* page 5 */
++
++	/*
++	 * TX analog trim.  The vendor optionally overrides these from an eFUSE
++	 * shadow, but that region is not reliably clocked once Linux is up
++	 * (reading it can stall the bus), and the trim is TX-side only -- our
++	 * fix is the RX equalizer below.  U-Boot board_init already applied the
++	 * per-chip eFUSE trim; use the safe unfused defaults here.
++	 */
++	writel(0x5a5a, base + 0x64);
++	writel(0x0000, base + 0x54);
++	writel(0x0bb0, base + 0x58);
++
++	/* 100BASE-T rise/fall/bias */
++	writel(0x0c10, base + 0x5c);
++	writel(0x0003, base + 0x68);
++	writel(0x0000, base + 0x54);
++
++	/* MLT3 shaping -- page 16 (+0 / +I) */
++	writel(0x1000, base + 0x7c);
++	writel(0x1000, base + 0x68);
++	writel(0x3020, base + 0x6c);
++	writel(0x5040, base + 0x70);
++	writel(0x7060, base + 0x74);
++	writel(0x1708, base + 0x58);
++	writel(0x3827, base + 0x5c);
++	writel(0x5748, base + 0x60);
++	writel(0x7867, base + 0x64);
++
++	/* MLT3 shaping -- page 17 (-0 / -I) */
++	writel(0x1100, base + 0x7c);
++	writel(0x9080, base + 0x40);
++	writel(0xb0a0, base + 0x44);
++	writel(0xd0c0, base + 0x48);
++	writel(0xf0e0, base + 0x4c);
++	writel(0x9788, base + 0x50);
++	writel(0xb8a7, base + 0x54);
++	writel(0xd7c8, base + 0x58);
++	writel(0xf8e7, base + 0x5c);
++
++	/* page 5: enable TX Rterm, adjust rx vcm */
++	writel(0x0500, base + 0x7c);
++	writel(readl(base + 0x40) | 0x0001, base + 0x40);
++	writel(readl(base + 0x4c) | 0x0820, base + 0x4c);
++
++	/* Link pulse -- page 10 */
++	writel(0x0a00, base + 0x7c);
++	writel(0x3e00, base + 0x40);
++	writel(0x7864, base + 0x44);
++	writel(0x6470, base + 0x48);
++	writel(0x5f62, base + 0x4c);
++	writel(0x5a5a, base + 0x50);
++	writel(0x5458, base + 0x54);
++	writel(0xb23a, base + 0x58);
++	writel(0x94a0, base + 0x5c);
++	writel(0x9092, base + 0x60);
++	writel(0x8a8e, base + 0x64);
++	writel(0x8688, base + 0x68);
++	writel(0x8484, base + 0x6c);
++	writel(0x0082, base + 0x70);
++
++	/* TP_IDLE -- page 11 */
++	writel(0x0b00, base + 0x7c);
++	writel(0x5252, base + 0x40);
++	writel(0x5252, base + 0x44);
++	writel(0x4b52, base + 0x48);
++	writel(0x3d47, base + 0x4c);
++	writel(0xaa99, base + 0x50);
++	writel(0x989e, base + 0x54);
++	writel(0x9395, base + 0x58);
++	writel(0x9091, base + 0x5c);
++	writel(0x8e8f, base + 0x60);
++	writel(0x8d8e, base + 0x64);
++	writel(0x8c8c, base + 0x68);
++	writel(0x8b8b, base + 0x6c);
++	writel(0x008a, base + 0x70);
++
++	/* 10BASE-T data -- pages 13, 14, 15, 16 */
++	writel(0x0d00, base + 0x7c);
++	writel(0x1e0a, base + 0x40);
++	writel(0x3862, base + 0x44);
++	writel(0x1e62, base + 0x48);
++	writel(0x2a08, base + 0x4c);
++	writel(0x244c, base + 0x50);
++	writel(0x1a44, base + 0x54);
++	writel(0x061c, base + 0x58);
++
++	writel(0x0e00, base + 0x7c);
++	writel(0x2d30, base + 0x40);
++	writel(0x3470, base + 0x44);
++	writel(0x0648, base + 0x48);
++	writel(0x261c, base + 0x4c);
++	writel(0x3160, base + 0x50);
++	writel(0x2d5e, base + 0x54);
++
++	writel(0x0f00, base + 0x7c);
++	writel(0x2922, base + 0x40);
++	writel(0x366e, base + 0x44);
++	writel(0x0752, base + 0x48);
++	writel(0x2556, base + 0x4c);
++	writel(0x2348, base + 0x50);
++	writel(0x0c30, base + 0x54);
++
++	writel(0x1000, base + 0x7c);
++	writel(0x1e08, base + 0x40);
++	writel(0x3868, base + 0x44);
++	writel(0x1462, base + 0x48);
++	writel(0x1a0e, base + 0x4c);
++	writel(0x305e, base + 0x50);
++	writel(0x2f62, base + 0x54);
++
++	/* LED select -- page 1 */
++	writel(0x0100, base + 0x7c);
++	writel(readl(base + 0x68) & ~0x0f00, base + 0x68);
++
++	/* AGC max/min swing -- page 19 */
++	writel(0x1300, base + 0x7c);
++	writel(0x0012, base + 0x58);
++	writel(0x6848, base + 0x5c);
++
++	/* RX equalizer LPF/HPF -- page 18 (CV181x "mars" values) */
++	writel(0x1200, base + 0x7c);
++	writel(0x0808, base + 0x48);
++	writel(0x0808, base + 0x4c);
++	writel(0x32f8, base + 0x50);
++	writel(0xf8dc, base + 0x54);
++
++	/* start auto-neg, force full duplex, hand MDIO back to the MAC */
++	writel(0x0000, base + 0x7c);		/* page 0 */
++	writel(0x090e, top);			/* release main_rst_n -> aneg */
++	writel(readl(base) | 0x0100, base);	/* BMCR full-duplex */
++	writel(0x0000, top + 4);		/* MDIO back to the ETH MAC */
++
++	iounmap(base);
++	iounmap(top);
++
++	return 0;
++}
++
++static int cvitek_ephy_resume(struct phy_device *phydev)
++{
++	int ret;
++
++	ret = cvitek_ephy_config_init(phydev);
++	if (ret < 0)
++		return ret;
++
++	return genphy_config_aneg(phydev);
++}
++
++static int cvitek_ephy_suspend(struct phy_device *phydev)
++{
++	/*
++	 * Deliberately do NOT power the PHY down (no BMCR_PDOWN): the analog
++	 * bring-up above must persist for the always-on BMC network.  Matches
++	 * the vendor's no-op suspend.
++	 */
++	return 0;
++}
++
++static struct phy_driver cvitek_ephy_driver[] = { {
++	.phy_id		= CVITEK_PHY_ID,
++	.phy_id_mask	= 0xffffffff,
++	.name		= "CVITEK CV18xx EPHY",
++	.config_init	= cvitek_ephy_config_init,
++	.suspend	= cvitek_ephy_suspend,
++	.resume		= cvitek_ephy_resume,
++	.set_loopback	= genphy_loopback,
++} };
++
++module_phy_driver(cvitek_ephy_driver);
++
++static const struct mdio_device_id __maybe_unused cvitek_ephy_tbl[] = {
++	{ CVITEK_PHY_ID, 0xffffffff },
++	{ }
++};
++MODULE_DEVICE_TABLE(mdio, cvitek_ephy_tbl);
++
++MODULE_DESCRIPTION("Sophgo/CVITEK CV18xx internal Ethernet PHY driver");
++MODULE_AUTHOR("NanoKVM build");
++MODULE_LICENSE("GPL");

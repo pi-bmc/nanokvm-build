@@ -1,6 +1,6 @@
 From: NanoKVM build <nbatkins@gmail.com>
 Date: Tue, 8 Jul 2026 00:00:00 +0000
-Subject: [PATCH] riscv: dts: sophgo: nanokvm board tweaks (usb peripheral, i2c1)
+Subject: [PATCH] riscv: dts: sophgo: nanokvm board (usb, i2c1 eeprom, ethernet)
 
 NanoKVM board customisation, applied on top of the upstream USB backport
 (0001-apply-dts-usb-dev.patch):
@@ -10,23 +10,24 @@ NanoKVM board customisation, applied on top of the upstream USB backport
     UVC to the managed machine), so switch it to "peripheral".
 
   * I2C1: enable i2c1@4010000 and repurpose two SDIO1 pads as its bus
-    (SD1_D3 -> IIC1_SCL, SD1_D0 -> IIC1_SDA, both pad funcsel 2). This is
-    the mainline replacement for the vendor devmem pinmux hack; the
-    recipes-core/i2c-eeprom service then registers the i2c-slave-eeprom
-    backend on this controller.
+    (SD1_D3 -> IIC1_SCL, SD1_D0 -> IIC1_SDA, both pad funcsel 2, the
+    mainline replacement for the vendor devmem pinmux hack). Add the
+    i2c-slave-eeprom child with the I2C_OWN_SLAVE_ADDRESS flag so the
+    DesignWare controller probes in slave mode and presents an EEPROM to
+    the external host (Raspberry Pi).
+
+  * Ethernet: enable gmac0 + the mdio-mux so the SG2002 internal 10/100
+    EPHY comes up as eth0.
 
 Not upstream — local to this build.
 ---
- arch/riscv/boot/dts/sophgo/sg2002-licheerv-nano-b.dts | 23 +++++++++++++++++--
- 1 file changed, 21 insertions(+), 2 deletions(-)
-
 diff --git a/arch/riscv/boot/dts/sophgo/sg2002-licheerv-nano-b.dts b/arch/riscv/boot/dts/sophgo/sg2002-licheerv-nano-b.dts
-index b185377..394cfbf 100644
+index b185377..d093ecb 100644
 --- a/arch/riscv/boot/dts/sophgo/sg2002-licheerv-nano-b.dts
 +++ b/arch/riscv/boot/dts/sophgo/sg2002-licheerv-nano-b.dts
-@@ -95,6 +95,27 @@
+@@ -95,6 +95,89 @@
  };
-
+ 
  &usb {
 -	dr_mode = "host";
 +	dr_mode = "peripheral";
@@ -46,10 +47,72 @@ index b185377..394cfbf 100644
 +			power-source = <3300>;
 +		};
 +	};
++
++	uart1_cfg: uart1-cfg {
++		uart1-pins {
++			/* Target-host (Raspberry Pi) serial console. The Pi UART
++			 * is wired to the JTAG pads: JTAG_CPU_TMS -> UART1_TX,
++			 * JTAG_CPU_TCK -> UART1_RX, both funcsel 6. This steals
++			 * the pads from CPU JTAG, which is unused on this board.
++			 * Nothing muxes UART1 otherwise (the FSBL leaves these
++			 * pads at funcsel 0), so without this group ttyS1 opens
++			 * but no data reaches the Pi. */
++			pinmux = <PINMUX(PIN_JTAG_CPU_TMS, 6)>,
++				 <PINMUX(PIN_JTAG_CPU_TCK, 6)>;
++			bias-pull-up;
++			drive-strength-microamp = <10800>;
++			power-source = <3300>;
++		};
++	};
 +};
 +
 +&i2c1 {
 +	pinctrl-0 = <&i2c1_cfg>;
 +	pinctrl-names = "default";
++	status = "okay";
++
++	/*
++	 * Present an I2C slave EEPROM to the external host (Raspberry Pi). The
++	 * I2C_OWN_SLAVE_ADDRESS (1 << 30) flag in reg makes the DesignWare
++	 * controller probe in SLAVE mode (i2c_detect_slave_mode); without a
++	 * slave-flagged child it probes as master and i2c_slave_register() -> -95.
++	 * i2c-slave-eeprom has no of_match, but the i2c core falls back to the
++	 * id_table via the modalias, so "linux,slave-24c02" binds slave-24c02.
++	 */
++	eeprom@50 {
++		compatible = "linux,slave-24c02";
++		reg = <0x40000050>; /* 0x50 | I2C_OWN_SLAVE_ADDRESS */
++	};
++};
++
++&gmac0 {
++	/*
++	 * The internal 10/100 EPHY connects to the dwmac over RMII. Upstream
++	 * cv180x.dtsi sets phy-mode = "internal", but with that the MAC never
++	 * receives frames: autoneg trains to 100M/Full (PHY-analog) yet the MMC
++	 * RX counters stay 0 and DHCP never leases. The CVITEK vendor DTS uses
++	 * phy-mode = "rmii"; match it.
++	 */
++	phy-mode = "rmii";
++	status = "okay";
++};
++
++&uart1 {
++	/*
++	 * Target-host serial console, exposed by the BMC app as /dev/ttyS1
++	 * (server/config/default.go Device default). The node already carries
++	 * reg/interrupts/clocks/resets from cv180x.dtsi -- it was only marked
++	 * "disabled", so with no real device behind it /dev/ttyS1 was a phantom
++	 * legacy-8250 slot and any termios ioctl returned -EIO ("serial error:
++	 * ... getting term settings: input/output error"). Enabling it lets
++	 * dw-apb-uart probe and register a real ttyS1; uart1_cfg routes the
++	 * TX/RX signals onto the JTAG pads wired to the Pi.
++	 */
++	pinctrl-0 = <&uart1_cfg>;
++	pinctrl-names = "default";
++	status = "okay";
++};
++
++&mdio {
  	status = "okay";
  };

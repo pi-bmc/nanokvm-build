@@ -9,9 +9,12 @@ inherit go-mod go update-rc.d
 # github.com/BMCPi/NanoKVM -- GO_IMPORT must match the module path, not the URL.
 GO_IMPORT = "github.com/BMCPi/NanoKVM"
 SRCREV = "${AUTOREV}"
-SRC_URI = "git://github.com/pi-bmc/nanokvm-app;branch=main;protocol=https"
+SRC_URI = "git://github.com/pi-bmc/nanokvm-app;branch=main;protocol=https \
+           file://nanokvm.init"
 
 S = "${WORKDIR}/git"
+
+FILESEXTRAPATHS:prepend := "${THISDIR}/files:"
 
 # The refactored app is pure Go (CGO disabled) -- no cvitek vision libs, no cgo,
 # no patchelf. The generated code (templ *_templ.go and the tailwind
@@ -79,10 +82,13 @@ do_install() {
     install -m 0755 ${B}/rpiboot ${D}${bindir}/rpiboot
     install -m 0755 ${B}/fw_env  ${D}${bindir}/fw_env
 
-    # Service init script shipped by the app's packaging (start/stop/status via
-    # start-stop-daemon), registered through oe-core sysvinit/update-rc.d.
+    # Service init script (start/stop/status via start-stop-daemon), registered
+    # through oe-core sysvinit/update-rc.d. We ship our own instead of the app's
+    # packaging/etc/init.d/S95nanokvm because the upstream one uses Debian-only
+    # start-stop-daemon options (-O logfile, -d chdir) that BusyBox rejects, so
+    # the daemon never launches on this image. See files/nanokvm.init.
     install -d ${D}${sysconfdir}/init.d
-    install -m 0755 ${GO_APP_DIR}/packaging/etc/init.d/S95nanokvm \
+    install -m 0755 ${WORKDIR}/nanokvm.init \
         ${D}${sysconfdir}/init.d/nanokvm
 }
 

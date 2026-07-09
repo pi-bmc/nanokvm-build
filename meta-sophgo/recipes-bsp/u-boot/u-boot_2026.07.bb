@@ -15,6 +15,7 @@ SRC_URI = "git://source.denx.de/u-boot/u-boot.git;protocol=https;branch=master \
            file://0001-mmc-cv1800b-honor-no-1-8-v.patch \
            file://0002-licheerv-nano-raise-load-addrs.patch \
            file://0003-licheerv-nano-cap-sdhci0-to-default-speed.patch \
+           file://0004-licheerv-nano-init-internal-ephy.patch \
            "
 # v2026.07
 SRCREV = "ece349ade2973e220f524ce59e59711cc919263f"
@@ -28,13 +29,19 @@ SRCREV = "ece349ade2973e220f524ce59e59711cc919263f"
 
 DEPENDS += "bc-native dtc-native"
 
-# U-Boot 2026.07 builds the mkeficapsule host tool against gnutls PKCS#11
-# (gnutls_pkcs11_*), but oe-core's gnutls-native is built without p11-kit/PKCS#11,
-# so the tool fails to link. This board boots via FSBL -> OpenSBI -> U-Boot ->
-# extlinux and needs no EFI capsule update tooling; disable the host tool. (The
-# EFI_LOADER runtime support in the U-Boot binary itself is untouched.)
 do_configure:append() {
+    # mkeficapsule: U-Boot 2026.07 links its host tool against gnutls PKCS#11
+    # (gnutls_pkcs11_*), which oe-core's gnutls-native lacks (no p11-kit), so it
+    # fails to link. This board boots FSBL -> OpenSBI -> U-Boot -> extlinux and
+    # needs no EFI capsule tooling; disable it. (Runtime EFI_LOADER is untouched.)
     "${S}/scripts/config" --file "${B}/.config" --disable TOOLS_MKEFICAPSULE
+
+    # BOARD_INIT: sipeed_licheerv_nano_defconfig explicitly disables it, so
+    # board_init() (0004: cv1800b_ephy_init + sysreset bind) is never called --
+    # the internal EPHY stays in shutdown (EPHY_CTL=0x901) and Linux can't attach
+    # the PHY. It defaults y on RISC-V (milkv_duo relies on that); re-enable it.
+    "${S}/scripts/config" --file "${B}/.config" --enable BOARD_INIT
+
     oe_runmake -C ${S} O=${B} olddefconfig
 }
 

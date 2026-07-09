@@ -168,12 +168,15 @@ IMAGE_INSTALL:append = " \
     "
 
 # --- NanoKVM application ---
+# NanoKVM-Server (kvmapp) provides its own IPMI server (port 623), so the
+# standalone IPMI init scripts are dropped: ipmi-sim (its only content is the
+# S99ipmi_sim init script + lanserv config) and openipmi (ships the /etc/init.d/
+# ipmi service and is otherwise only pulled in as ipmi-sim's dependency). They
+# would conflict with kvmapp on port 623. The ipmitool CLI is kept (see above).
 IMAGE_INSTALL:append = " \
     nanokvm-server \
     nanokvm-gadget \
     i2c-eeprom \
-    ipmi-sim \
-    openipmi \
     "
 
 # --- Rootfs size: 1600 MB matches BR2_TARGET_ROOTFS_EXT2_SIZE="1600M" ---

@@ -1,0 +1,101 @@
+From: NanoKVM build <nbatkins@gmail.com>
+Date: Thu, 9 Jul 2026 00:00:00 +0000
+Subject: [PATCH] soc: sophgo: cv1800-rtcsys: add warm-reset restart handler
+
+Mainline has no reboot method for CV1800/SG2002: generic OpenSBI has no
+cvitek SRST reset device and cv180x.dtsi has no reboot/watchdog node, so
+Linux reboot hangs (RCU stall in machine_restart). The RTC/PoR block is the
+chip reset state machine; register a sys-off restart handler that drives the
+vendor warm-reset sequence (arm req @ +0x10cc, unlock key 0xab18 @ +0x04,
+set warm-reset bit @ +0x08) via the node's existing "syscon" regmap, at
+priority 200 so it precedes the no-op SBI SRST handler (192). No DT change.
+
+Upstream-Status: Pending
+Signed-off-by: NanoKVM build <nbatkins@gmail.com>
+---
+diff --git a/drivers/soc/sophgo/cv1800-rtcsys.c b/drivers/soc/sophgo/cv1800-rtcsys.c
+index fdae2e2a61c5..fb27d9221100 100644
+--- a/drivers/soc/sophgo/cv1800-rtcsys.c
++++ b/drivers/soc/sophgo/cv1800-rtcsys.c
+@@ -10,10 +10,42 @@
+  *
+  */
+ 
++#include <linux/bits.h>
++#include <linux/delay.h>
+ #include <linux/mfd/core.h>
++#include <linux/mfd/syscon.h>
+ #include <linux/module.h>
+ #include <linux/of.h>
+ #include <linux/property.h>
++#include <linux/reboot.h>
++#include <linux/regmap.h>
++
++/*
++ * The RTC/PoR block is also the chip reset state machine. Mainline has no reboot
++ * method for CV1800/SG2002 (generic OpenSBI has no cvitek SRST reset device and
++ * cv180x.dtsi has no reboot/watchdog node), so machine_restart() hangs. Drive the
++ * vendor warm-reset sequence here: arm the warm-reset request, write the control
++ * unlock key, then set the warm-reset bit. Offsets are relative to the
++ * rtc@5025000 "syscon" node (its regmap covers the 0x2000 window).
++ */
++#define RTC_CTRL0_UNLOCK	0x04
++#define  RTC_CTRL0_UNLOCK_KEY	0xab18
++#define RTC_CTRL0		0x08
++#define  RTC_CTRL0_WARM_RESET	(0xffff0800 | BIT(4))
++#define RTC_EN_WARM_RST_REQ	0x10cc
++
++static int cv1800_rtcsys_restart(struct sys_off_data *data)
++{
++	struct regmap *map = data->cb_data;
++
++	regmap_write(map, RTC_EN_WARM_RST_REQ, 0x1);
++	regmap_write(map, RTC_CTRL0_UNLOCK, RTC_CTRL0_UNLOCK_KEY);
++	regmap_update_bits(map, RTC_CTRL0, RTC_CTRL0_WARM_RESET,
++			   RTC_CTRL0_WARM_RESET);
++
++	mdelay(1000);
++	return NOTIFY_DONE;
++}
+ 
+ static struct resource cv1800_rtcsys_irq_resources[] = {
+ 	DEFINE_RES_IRQ_NAMED(0, "alarm"),
+@@ -29,7 +61,8 @@ static const struct mfd_cell cv1800_rtcsys_subdev[] = {
+ 
+ static int cv1800_rtcsys_probe(struct platform_device *pdev)
+ {
+-	int irq;
++	struct regmap *map;
++	int irq, ret;
+ 
+ 	irq = platform_get_irq_byname(pdev, "alarm");
+ 	if (irq < 0)
+@@ -37,10 +70,24 @@ static int cv1800_rtcsys_probe(struct platform_device *pdev)
+ 	cv1800_rtcsys_irq_resources[0].start = irq;
+ 	cv1800_rtcsys_irq_resources[0].end = irq;
+ 
+-	return devm_mfd_add_devices(&pdev->dev, PLATFORM_DEVID_AUTO,
+-				    cv1800_rtcsys_subdev,
+-				    ARRAY_SIZE(cv1800_rtcsys_subdev),
+-				    NULL, 0, NULL);
++	ret = devm_mfd_add_devices(&pdev->dev, PLATFORM_DEVID_AUTO,
++				   cv1800_rtcsys_subdev,
++				   ARRAY_SIZE(cv1800_rtcsys_subdev),
++				   NULL, 0, NULL);
++	if (ret)
++		return ret;
++
++	/*
++	 * The RTC node is a "syscon", so the same regmap the RTC cell uses also
++	 * reaches the reset registers. Register a restart handler at priority
++	 * 200 -- above the SBI SRST handler (192), which no-ops on this SoC.
++	 */
++	map = device_node_to_regmap(pdev->dev.of_node);
++	if (!IS_ERR(map))
++		devm_register_sys_off_handler(&pdev->dev, SYS_OFF_MODE_RESTART,
++					      200, cv1800_rtcsys_restart, map);
++
++	return 0;
+ }
+ 
+ static const struct of_device_id cv1800_rtcsys_of_match[] = {

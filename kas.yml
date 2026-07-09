@@ -68,3 +68,8 @@ local_conf_header:
     LICENSE_FLAGS_ACCEPTED = "commercial"
     # Disable interactive prompts
     CONNECTIVITY_CHECK_URIS = ""
+    # AUTOREV recipes (nanokvm-server) must track the current upstream HEAD.
+    # The default srcrev cache pins the first-resolved commit, so builds go
+    # stale; "clear" re-resolves SRCREV every build so AUTOREV always pulls the
+    # newest (pinned SRCREV recipes are unaffected -- they need no resolution).
+    BB_SRCREV_POLICY = "clear"

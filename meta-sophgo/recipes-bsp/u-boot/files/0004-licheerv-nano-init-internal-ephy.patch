@@ -1,0 +1,312 @@
+From: NanoKVM build <nbatkins@gmail.com>
+Date: Wed, 8 Jul 2026 00:00:00 +0000
+Subject: [PATCH] board: sophgo: licheerv_nano: init internal EPHY (enable eth0)
+
+The SG2002 internal 100M EPHY needs an analog/register bring-up before it
+will advertise link abilities. Mainline U-Boot already ships
+cv1800b_ephy_init() for the Milk-V Duo, but the LicheeRV Nano board has an
+empty board.c and never calls it, so Linux sees a dead PHY:
+"stmmaceth 4070000.ethernet eth0: cannot attach to PHY (error: -EINVAL)".
+
+Add the same ethernet.c to the LicheeRV Nano board and call cv1800b_ephy_init()
+from board_init() (unconditionally, so it runs regardless of U-Boot net
+config). Also bind the cv1800b sysreset driver here as milkv_duo does, which
+additionally fixes "System reset not supported on this platform".
+---
+diff --git a/board/sophgo/licheerv_nano/Makefile b/board/sophgo/licheerv_nano/Makefile
+index 59fcd5b..38a15e9 100644
+--- a/board/sophgo/licheerv_nano/Makefile
++++ b/board/sophgo/licheerv_nano/Makefile
+@@ -3,3 +3,4 @@
+ # Copyright (c) 2024, Kongyang Liu <seashell11234455@gmail.com>
+ 
+ obj-y += board.o
++obj-y += ethernet.o
+diff --git a/board/sophgo/licheerv_nano/board.c b/board/sophgo/licheerv_nano/board.c
+index e6099d3..558bde3 100644
+--- a/board/sophgo/licheerv_nano/board.c
++++ b/board/sophgo/licheerv_nano/board.c
+@@ -3,3 +3,26 @@
+  * Copyright (c) 2024, Kongyang Liu <seashell11234455@gmail.com>
+  */
+ 
++#include <dm/lists.h>
++
++#include "ethernet.h"
++
++int board_init(void)
++{
++	if (IS_ENABLED(CONFIG_SYSRESET_CV1800B))
++		device_bind_driver(gd->dm_root, "cv1800b_sysreset", "sysreset", NULL);
++
++	/*
++	 * Power up the SG2002 internal 100M EPHY analog block (register bring-up
++	 * at 0x03009000/0x03009800). Mainline U-Boot ships cv1800b_ephy_init() for
++	 * milkv_duo but the LicheeRV Nano board never called it, so with no init
++	 * the PHY stays in reset/power-down: Linux reads zero speed abilities and
++	 * a zero PHYID, and phylink aborts with "cannot attach to PHY (-EINVAL)".
++	 * Run it unconditionally (independent of U-Boot's own net config) so the
++	 * internal EPHY comes up as eth0 under Linux (generic C22, phy-mode
++	 * "internal"). The powered-up state persists across the handoff to Linux.
++	 */
++	cv1800b_ephy_init();
++
++	return 0;
++}
+diff --git a/board/sophgo/licheerv_nano/ethernet.c b/board/sophgo/licheerv_nano/ethernet.c
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/board/sophgo/licheerv_nano/ethernet.c
+@@ -0,0 +1,234 @@
++// SPDX-License-Identifier: GPL-2.0+
++/*
++ * Sophgo SG2002 (CVITEK CV181x) internal 100M EPHY bring-up.
++ *
++ * Ported verbatim from the CVITEK vendor U-Boot 2021.10 tree, which splits the
++ * init across two files:
++ *   board/cvitek/cv181x/board.c  cv181x_ephy_id_init()  - power-up + PHY ID
++ *   drivers/net/phy/cvitek.c     cv182xa_ephy_init()    - eFUSE analog trim,
++ *       MLT3 / link-pulse / TP_IDLE / 10BaseT waveform ROMs, AGC and the
++ *       CV181x ("mars") LPF/HPF equalizer, then start-autoneg + force-full-duplex.
++ *
++ * Mainline U-Boot's cv1800b_ephy_init() (board/sophgo/milkv_duo/ethernet.c)
++ * only replicated the power-up half (and asserted MAIN_RST_N/start-autoneg
++ * before any trim), so on real hardware the analog line is never tuned: the
++ * PHY register interface is alive but the link never trains -- NO-CARRIER even
++ * with a cable, and Linux (which has no dedicated EPHY driver, it drives the
++ * PHY as a generic C22) never sees carrier.  This restores the complete vendor
++ * sequence in the correct order so eth0 links.
++ *
++ * SG2002 is CV181x ("mars"), so the CV181x page-18 LPF/HPF coefficients are
++ * used (the CV180x/"phobos" set is different).  Register values are transcribed
++ * verbatim as absolute addresses to stay 1:1 with the vendor source.
++ *
++ * The vendor LED pinmux (board.c cv181x_ephy_led_pinmux) is deliberately NOT
++ * ported: it muxes the PHY LED outputs onto the SD1_CLK/SD1_CMD pads, the same
++ * pad group repurposed for the I2C1 slave EEPROM.  It is cosmetic and not
++ * required for link.
++ *
++ * Sources (byte-identical across both trees):
++ *   milkv-duo/duo-buildroot-sdk  (branch develop)
++ *   sipeed/LicheeRV-Nano-Build   (v4.1.0-licheervnano)
++ *     u-boot-2021.10/drivers/net/phy/cvitek.c
++ *     u-boot-2021.10/board/cvitek/cv181x/board.c
++ */
++
++#include <linux/io.h>
++#include <linux/types.h>
++
++/*
++ * EPHY APB register block.  With APB_RW_SEL=1 the PHY MII registers are mapped
++ * directly at EPHY_BASE + reg*4; MII reg 0x1f is the page select, written as
++ * (page << 8).  Addresses below are the vendor's absolute MMIO addresses.
++ */
++#define EPHY_BASE         0x03009000UL
++#define EPHY_PAGE_SEL     0x0300907cUL   /* MII reg 0x1f: page = value >> 8 */
++#define EPHY_CTL          0x03009800UL   /* shutdown / *_rst_n control       */
++#define EPHY_APB_RW_SEL   0x03009804UL   /* 1: APB direct, 0: hand to MAC MDIO */
++
++/* eFUSE shadow (OTP mirrored into these regs at boot): valid flags + trims. */
++#define EPHY_EFUSE_VALID  0x03050120UL
++#define EFUSE_TXECHORC    0x00000100UL   /* bit 8  */
++#define EFUSE_TXITUNE     0x00000200UL   /* bit 9  */
++#define EFUSE_TXRXTERM    0x00000800UL   /* bit 11 */
++#define EFUSE_W0          0x03051020UL
++#define EFUSE_W1          0x03051024UL
++
++static inline void ephy_wr(unsigned long a, u32 v)
++{
++	writel(v, (void __iomem *)(uintptr_t)a);
++}
++
++static inline u32 ephy_rd(unsigned long a)
++{
++	return readl((void __iomem *)(uintptr_t)a);
++}
++
++/* clear bits in @clr then OR in @set (vendor mmio_clrsetbits_32 / |= idiom) */
++static inline void ephy_clrset(unsigned long a, u32 clr, u32 set)
++{
++	ephy_wr(a, (ephy_rd(a) & ~clr) | set);
++}
++
++void cv1800b_ephy_init(void)
++{
++	u32 val;
++
++	/* ---- power-up (vendor board.c cv181x_ephy_id_init, minus LED mux) ---- */
++	ephy_wr(EPHY_APB_RW_SEL, 0x0001);	/* take APB control            */
++	ephy_wr(EPHY_CTL, 0x0900);		/* release shutdown            */
++	ephy_wr(EPHY_CTL, 0x0904);		/* release dig_rst_n (MII regs) */
++
++	ephy_wr(EPHY_PAGE_SEL, 0x0500);		/* page 5                      */
++	ephy_wr(0x03009040, 0x0c00);		/* release ANA_PD              */
++	ephy_wr(0x03009040, 0x0c7e);		/* release ANA_EN              */
++	ephy_wr(EPHY_CTL, 0x0906);		/* release ana_rst_n           */
++
++	ephy_wr(EPHY_PAGE_SEL, 0x0500);		/* page 5                      */
++	ephy_wr(0x03009008, 0x0043);		/* PHYSID1 \ uid 0x00435649    */
++	ephy_wr(0x0300900c, 0x5649);		/* PHYSID2 / ("CVI") -> genphy */
++
++	/* ---- eFUSE analog trim (vendor cvitek.c); defaults if unfused ---- */
++	/* TX i-tune / double bias current -> page5 0x9064 */
++	if ((ephy_rd(EPHY_EFUSE_VALID) & EFUSE_TXITUNE) == EFUSE_TXITUNE) {
++		val = ((ephy_rd(EFUSE_W1) >> 24) & 0xFF) |
++		      (((ephy_rd(EFUSE_W1) >> 16) & 0xFF) << 8);
++		ephy_clrset(0x03009064, 0xFFFF, val);
++	} else {
++		ephy_wr(0x03009064, 0x5a5a);
++	}
++	/* Echo_I -> page5 0x9054[15:8] */
++	if ((ephy_rd(EPHY_EFUSE_VALID) & EFUSE_TXECHORC) == EFUSE_TXECHORC)
++		ephy_clrset(0x03009054, 0xFF00, ((ephy_rd(EFUSE_W1) >> 8) & 0xFF) << 8);
++	else
++		ephy_wr(0x03009054, 0x0000);
++	/* TX Rterm + Echo RC delay -> page5 0x9058[11:4] */
++	if ((ephy_rd(EPHY_EFUSE_VALID) & EFUSE_TXRXTERM) == EFUSE_TXRXTERM) {
++		val = (((ephy_rd(EFUSE_W0) >> 28) & 0xF) << 4) |
++		      (((ephy_rd(EFUSE_W0) >> 24) & 0xF) << 8);
++		ephy_clrset(0x03009058, 0xFF0, val);
++	} else {
++		ephy_wr(0x03009058, 0x0bb0);
++	}
++
++	/* ---- 100BaseT ---- */
++	ephy_wr(0x0300905c, 0x0c10);		/* rise update                 */
++	ephy_wr(0x03009068, 0x0003);		/* falling phase               */
++	ephy_wr(0x03009054, 0x0000);		/* double TX bias current      */
++
++	/* ---- MLT3 shaping: page 16 (+0 / +I) ---- */
++	ephy_wr(EPHY_PAGE_SEL, 0x1000);
++	ephy_wr(0x03009068, 0x1000);
++	ephy_wr(0x0300906c, 0x3020);
++	ephy_wr(0x03009070, 0x5040);
++	ephy_wr(0x03009074, 0x7060);
++	ephy_wr(0x03009058, 0x1708);
++	ephy_wr(0x0300905c, 0x3827);
++	ephy_wr(0x03009060, 0x5748);
++	ephy_wr(0x03009064, 0x7867);
++
++	/* ---- MLT3 shaping: page 17 (-0 / -I) ---- */
++	ephy_wr(EPHY_PAGE_SEL, 0x1100);
++	ephy_wr(0x03009040, 0x9080);
++	ephy_wr(0x03009044, 0xb0a0);
++	ephy_wr(0x03009048, 0xd0c0);
++	ephy_wr(0x0300904c, 0xf0e0);
++	ephy_wr(0x03009050, 0x9788);
++	ephy_wr(0x03009054, 0xb8a7);
++	ephy_wr(0x03009058, 0xd7c8);
++	ephy_wr(0x0300905c, 0xf8e7);
++
++	/* ---- page 5: enable TX Rterm, adjust rx vcm ---- */
++	ephy_wr(EPHY_PAGE_SEL, 0x0500);
++	ephy_clrset(0x03009040, 0, 0x0001);	/* En TX_Rterm                 */
++	ephy_clrset(0x0300904c, 0, 0x0820);	/* change rx vcm               */
++
++	/* ---- Link Pulse: page 10 ---- */
++	ephy_wr(EPHY_PAGE_SEL, 0x0a00);
++	ephy_wr(0x03009040, 0x3e00);
++	ephy_wr(0x03009044, 0x7864);
++	ephy_wr(0x03009048, 0x6470);
++	ephy_wr(0x0300904c, 0x5f62);
++	ephy_wr(0x03009050, 0x5a5a);
++	ephy_wr(0x03009054, 0x5458);
++	ephy_wr(0x03009058, 0xb23a);
++	ephy_wr(0x0300905c, 0x94a0);
++	ephy_wr(0x03009060, 0x9092);
++	ephy_wr(0x03009064, 0x8a8e);
++	ephy_wr(0x03009068, 0x8688);
++	ephy_wr(0x0300906c, 0x8484);
++	ephy_wr(0x03009070, 0x0082);
++
++	/* ---- TP_IDLE: page 11 ---- */
++	ephy_wr(EPHY_PAGE_SEL, 0x0b00);
++	ephy_wr(0x03009040, 0x5252);
++	ephy_wr(0x03009044, 0x5252);
++	ephy_wr(0x03009048, 0x4b52);
++	ephy_wr(0x0300904c, 0x3d47);
++	ephy_wr(0x03009050, 0xaa99);
++	ephy_wr(0x03009054, 0x989e);
++	ephy_wr(0x03009058, 0x9395);
++	ephy_wr(0x0300905c, 0x9091);
++	ephy_wr(0x03009060, 0x8e8f);
++	ephy_wr(0x03009064, 0x8d8e);
++	ephy_wr(0x03009068, 0x8c8c);
++	ephy_wr(0x0300906c, 0x8b8b);
++	ephy_wr(0x03009070, 0x008a);
++
++	/* ---- 10BaseT data: pages 13, 14, 15, 16 ---- */
++	ephy_wr(EPHY_PAGE_SEL, 0x0d00);
++	ephy_wr(0x03009040, 0x1e0a);
++	ephy_wr(0x03009044, 0x3862);
++	ephy_wr(0x03009048, 0x1e62);
++	ephy_wr(0x0300904c, 0x2a08);
++	ephy_wr(0x03009050, 0x244c);
++	ephy_wr(0x03009054, 0x1a44);
++	ephy_wr(0x03009058, 0x061c);
++
++	ephy_wr(EPHY_PAGE_SEL, 0x0e00);
++	ephy_wr(0x03009040, 0x2d30);
++	ephy_wr(0x03009044, 0x3470);
++	ephy_wr(0x03009048, 0x0648);
++	ephy_wr(0x0300904c, 0x261c);
++	ephy_wr(0x03009050, 0x3160);
++	ephy_wr(0x03009054, 0x2d5e);
++
++	ephy_wr(EPHY_PAGE_SEL, 0x0f00);
++	ephy_wr(0x03009040, 0x2922);
++	ephy_wr(0x03009044, 0x366e);
++	ephy_wr(0x03009048, 0x0752);
++	ephy_wr(0x0300904c, 0x2556);
++	ephy_wr(0x03009050, 0x2348);
++	ephy_wr(0x03009054, 0x0c30);
++
++	ephy_wr(EPHY_PAGE_SEL, 0x1000);
++	ephy_wr(0x03009040, 0x1e08);
++	ephy_wr(0x03009044, 0x3868);
++	ephy_wr(0x03009048, 0x1462);
++	ephy_wr(0x0300904c, 0x1a0e);
++	ephy_wr(0x03009050, 0x305e);
++	ephy_wr(0x03009054, 0x2f62);
++
++	/* ---- LED select: page 1 (LED_LNK/SPD/DPX to LED_PAD) ---- */
++	ephy_wr(EPHY_PAGE_SEL, 0x0100);
++	ephy_clrset(0x03009068, 0x0f00, 0);
++
++	/* ---- AGC max/min swing: page 19 ---- */
++	ephy_wr(EPHY_PAGE_SEL, 0x1300);
++	ephy_wr(0x03009058, 0x0012);
++	ephy_wr(0x0300905c, 0x6848);
++
++	/* ---- RX equalizer LPF/HPF: page 18 (CV181x "mars" values) ---- */
++	ephy_wr(EPHY_PAGE_SEL, 0x1200);
++	ephy_wr(0x03009048, 0x0808);		/* lpf                         */
++	ephy_wr(0x0300904c, 0x0808);
++	ephy_wr(0x03009050, 0x32f8);		/* hpf                         */
++	ephy_wr(0x03009054, 0xf8dc);
++
++	/* ---- start auto-negotiation, force full-duplex ---- */
++	ephy_wr(EPHY_PAGE_SEL, 0x0000);		/* page 0                      */
++	ephy_wr(EPHY_CTL, 0x090e);		/* release main_rst_n -> autoneg */
++	ephy_clrset(0x03009000, 0, 0x0100);	/* BMCR full-duplex (post-reset) */
++
++	ephy_wr(EPHY_APB_RW_SEL, 0x0000);	/* hand MDIO back to the MAC   */
++}
+diff --git a/board/sophgo/licheerv_nano/ethernet.h b/board/sophgo/licheerv_nano/ethernet.h
+new file mode 100644
+index 0000000..7b21f1b
+--- /dev/null
++++ b/board/sophgo/licheerv_nano/ethernet.h
+@@ -0,0 +1,11 @@
++/* SPDX-License-Identifier: GPL-2.0+ */
++/*
++ * Copyright (c) 2024, Kongyang Liu <seashell11234455@gmail.com>
++ */
++
++#ifndef __CV1800B_ETHERNET_H
++#define __CV1800B_ETHERNET_H
++
++void cv1800b_ephy_init(void);
++
++#endif

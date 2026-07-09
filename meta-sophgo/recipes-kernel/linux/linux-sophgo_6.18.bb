@@ -5,7 +5,7 @@ LIC_FILES_CHKSUM = "file://COPYING;md5=6bc538ed5bd9a7fc9398086aedcd7e46"
 
 inherit kernel
 
-LINUX_VERSION = "6.18"
+LINUX_VERSION = "6.18.38"
 LINUX_VERSION_EXTENSION = "-sophgo"
 PV = "${LINUX_VERSION}+git${SRCPV}"
 
@@ -16,9 +16,9 @@ PV = "${LINUX_VERSION}+git${SRCPV}"
 # present in mainline and is intentionally dropped (see nanokvm-image.bb).
 SRC_URI = "git://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git;branch=linux-6.18.y;protocol=https"
 
-# v6.18 (release tag). Pinned so the DTS USB backport applies deterministically;
-# bump to a later 6.18.y point release only after re-checking the patch.
-SRCREV = "7d0a66e4bb9081d75c82ec4957c50034cb0ea449"
+# v6.18.38 (stable point release). Pinned so the DTS backports apply
+# deterministically; all three (0001/0002/0003) re-verified to apply at this tag.
+SRCREV = "e46dc0adfe39724bcf52cea47b8f9c9aed86a394"
 
 S = "${WORKDIR}/git"
 
