@@ -1,0 +1,16 @@
+# Compressed RAM swap on the built-in zram0 device (replaces the S04 init
+# script). udev applies the ATTR assignments inline in token order --
+# comp_algorithm first (it locks once the device is sized), then disksize --
+# and runs the two RUN commands afterwards, so the effective sequence is:
+#   comp_algorithm -> disksize -> mkswap -> swapon.
+#
+# lzo-rle is the only backend built into this kernel (CONFIG_ZRAM_BACKEND_
+# FORCE_LZO) and is the right trade for this low-power C906 core. disksize is
+# capped near physical RAM (~207 MiB): zram's disksize is the *uncompressed*
+# capacity but the compressed pages live in RAM, so a multi-GB size would let
+# the kernel commit far more swap than can fit and OOM the board. Priority 100
+# so the kernel prefers zram over any other swap.
+ACTION=="add", KERNEL=="zram0", SUBSYSTEM=="block", \
+  ATTR{comp_algorithm}="lzo-rle", ATTR{disksize}="256M", \
+  RUN+="/sbin/mkswap /dev/zram0", \
+  RUN+="/sbin/swapon -p 100 /dev/zram0"

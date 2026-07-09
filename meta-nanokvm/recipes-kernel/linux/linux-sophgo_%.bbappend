@@ -23,9 +23,7 @@ SRC_URI:append:sg2002-licheervnano = " \
     file://0001-apply-dts-usb-dev.patch \
     file://0002-riscv-dts-sophgo-add-cv1800b-usb2-phy.patch \
     file://0003-nanokvm-board-dts.patch \
-    file://0004-nanokvm-cvitek-ephy-driver.patch \
     file://0005-nanokvm-cv1800-reboot.patch \
-    file://0006-nanokvm-cv1800-efuse-nvmem.patch \
     file://nanokvm.cfg \
     file://boot.its \
     "

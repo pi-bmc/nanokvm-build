@@ -25,7 +25,7 @@ diff --git a/arch/riscv/boot/dts/sophgo/sg2002-licheerv-nano-b.dts b/arch/riscv/
 index b185377..d093ecb 100644
 --- a/arch/riscv/boot/dts/sophgo/sg2002-licheerv-nano-b.dts
 +++ b/arch/riscv/boot/dts/sophgo/sg2002-licheerv-nano-b.dts
-@@ -95,6 +95,142 @@
+@@ -95,6 +95,124 @@
  };
  
  &usb {
@@ -112,13 +112,12 @@ index b185377..d093ecb 100644
 +
 +&gmac0 {
 +	/*
-+	 * The internal 10/100 EPHY connects to the dwmac over RMII. Upstream
-+	 * cv180x.dtsi sets phy-mode = "internal", but with that the MAC never
-+	 * receives frames: autoneg trains to 100M/Full (PHY-analog) yet the MMC
-+	 * RX counters stay 0 and DHCP never leases. The CVITEK vendor DTS uses
-+	 * phy-mode = "rmii"; match it.
++	 * Built-in SG2002 dwmac + internal 10/100 EPHY. Enable the node (and the
++	 * mdio bus below) and let upstream drive it: stmmac runs the MAC and the
++	 * internal PHY binds the generic PHY driver. The EPHY analog front end is
++	 * brought up by U-Boot (cv1800b_ephy_init), so no in-kernel PHY driver is
++	 * needed. Uses the upstream phy-mode ("internal", from cv180x.dtsi).
 +	 */
-+	phy-mode = "rmii";
 +	status = "okay";
 +};
 +
@@ -147,23 +146,6 @@ index b185377..d093ecb 100644
 +	 */
 +	pinctrl-0 = <&gpio0_cfg>;
 +	pinctrl-names = "default";
-+};
-+
-+&{/soc} {
-+	/*
-+	 * eFUSE controller, exposed read-only via nvmem (0006 patch). Present
-+	 * so a stable per-chip Ethernet MAC can be derived from immutable fuse
-+	 * data: mainline U-Boot and stmmac supply no MAC, so without a fixed
-+	 * source stmmac invents a fresh random locally-administered address on
-+	 * every boot and the DHCP lease cycles. Clock-gated -- the driver
-+	 * enables CLK_EFUSE/CLK_APB_EFUSE around each read (an ungated access to
-+	 * this block stalls the APB/AXI bus).
-+	 */
-+	efuse: efuse@3050000 {
-+		compatible = "sophgo,cv1800b-efuse";
-+		reg = <0x03050000 0x1000>;
-+		clocks = <&clk CLK_EFUSE>, <&clk CLK_APB_EFUSE>;
-+	};
 +};
 +
 +&mdio {

@@ -5,8 +5,15 @@
 #     iface eth inet dhcp
 # BusyBox ifupdown (what this image uses) mis-parses it at boot and prints
 #     Error: argument "/en*" is wrong: "dev" not a valid ifname
-# eth0 is configured by nanokvm-network (S30eth) and usb0 by the USB gadget, so
-# the /en* mapping is unused here -- strip it (leaving lo and the rest intact).
+# usb0 is configured by the USB gadget and the /en* mapping is unused here, so
+# strip it (leaving lo, eth0 and the rest intact).
+#
+# eth0 keeps its stock stanza:
+#     auto eth0
+#     iface eth0 inet dhcp
+# ifupdown does the DHCP; nanokvm-network installs an if-pre-up.d hook that sets
+# a stable eFUSE-derived MAC before ifup runs udhcpc, so the lease/IP do not
+# cycle regardless of who triggers ifup.
 do_install:append() {
     if [ -f "${D}${sysconfdir}/network/interfaces" ]; then
         sed -i \

@@ -1,0 +1,135 @@
+From: NanoKVM build <nbatkins@gmail.com>
+Date: Thu, 9 Jul 2026 00:00:00 +0000
+Subject: [PATCH] licheerv-nano: derive a stable MAC from eFUSE, fix up the DT
+
+Mainline stmmac is given no MAC for gmac0, so Linux synthesises a fresh random
+(locally-administered) address on every boot and the DHCP lease/IP cycle.
+Derive a stable per-board MAC from the immutable eFUSE (CRC of the fuse shadow
+under the registered OUI 48:da:35) and write it into the kernel device tree as
+/soc/ethernet@4070000's local-mac-address via ft_board_setup(), so stmmac uses
+it directly -- no in-kernel eFUSE driver needed. Reading the eFUSE is safe from
+U-Boot: cv1800b_ephy_init() already reads the shadow during board_init, so the
+block is clocked (a raw read from Linux stalls the bus). Enables
+CONFIG_OF_BOARD_SETUP so ft_board_setup() runs during bootm FDT setup.
+
+Upstream-Status: Pending
+Signed-off-by: NanoKVM build <nbatkins@gmail.com>
+---
+diff --git a/board/sophgo/licheerv_nano/board.c b/board/sophgo/licheerv_nano/board.c
+index 558bde3..2c40d3a 100644
+--- a/board/sophgo/licheerv_nano/board.c
++++ b/board/sophgo/licheerv_nano/board.c
+@@ -4,6 +4,8 @@
+  */
+ 
+ #include <dm/lists.h>
++#include <fdt_support.h>
++#include <linux/types.h>
+ 
+ #include "ethernet.h"
+ 
+@@ -26,3 +28,24 @@ int board_init(void)
+ 
+ 	return 0;
+ }
++
++/*
++ * Hand Linux a stable, per-board MAC via the kernel device tree. Mainline
++ * stmmac is otherwise given no address for gmac0 and synthesises a fresh random
++ * (locally-administered) MAC on every boot, so the DHCP lease and IP cycle. We
++ * derive it from the immutable SoC eFUSE (see cv1800b_derive_mac) -- reading the
++ * eFUSE is safe from U-Boot, which gates its clocks on first, unlike a raw read
++ * from Linux -- and set /soc/ethernet@4070000's local-mac-address so stmmac
++ * uses it directly (no in-kernel eFUSE driver needed). ft_board_setup runs
++ * during bootm's FDT setup (CONFIG_OF_BOARD_SETUP).
++ */
++int ft_board_setup(void *blob, struct bd_info *bd)
++{
++	u8 mac[6];
++
++	cv1800b_derive_mac(mac);
++	do_fixup_by_compat(blob, "sophgo,cv1800b-dwmac",
++			   "local-mac-address", mac, sizeof(mac), 1);
++
++	return 0;
++}
+diff --git a/board/sophgo/licheerv_nano/ethernet.c b/board/sophgo/licheerv_nano/ethernet.c
+index 7f1b048..1687d00 100644
+--- a/board/sophgo/licheerv_nano/ethernet.c
++++ b/board/sophgo/licheerv_nano/ethernet.c
+@@ -35,6 +35,7 @@
+ 
+ #include <linux/io.h>
+ #include <linux/types.h>
++#include <u-boot/crc.h>
+ 
+ /*
+  * EPHY APB register block.  With APB_RW_SEL=1 the PHY MII registers are mapped
+@@ -232,3 +233,44 @@ void cv1800b_ephy_init(void)
+ 
+ 	ephy_wr(EPHY_APB_RW_SEL, 0x0000);	/* hand MDIO back to the MAC   */
+ }
++
++/*
++ * eFUSE shadow: the fuse array mirrored into MMIO at boot. cv1800b_ephy_init()
++ * above already reads it (EPHY_EFUSE_VALID / EFUSE_W0 / EFUSE_W1) during
++ * board_init, so the block is clocked and readable here -- no clock-gate
++ * poking, unlike a raw read from Linux which stalls the bus.
++ */
++#define EFUSE_SHADOW_BASE  0x03050100UL
++#define EFUSE_SHADOW_SIZE  0x100
++
++/*
++ * Derive a stable, per-board MAC from the immutable eFUSE. The registered OUI
++ * 48:da:35 is fixed; the low 24 bits are a CRC of the whole fuse shadow (chip
++ * id + trims), which is unique per chip and identical across reboots/reflashes.
++ * board.c's ft_board_setup() writes this into the kernel DT so stmmac uses it
++ * instead of a fresh random address each boot.
++ */
++void cv1800b_derive_mac(u8 mac[6])
++{
++	unsigned char buf[EFUSE_SHADOW_SIZE];
++	u32 crc;
++	int i;
++
++	for (i = 0; i < EFUSE_SHADOW_SIZE; i += 4) {
++		u32 v = ephy_rd(EFUSE_SHADOW_BASE + i);
++
++		buf[i + 0] = v;
++		buf[i + 1] = v >> 8;
++		buf[i + 2] = v >> 16;
++		buf[i + 3] = v >> 24;
++	}
++
++	crc = crc32(0, buf, EFUSE_SHADOW_SIZE);
++
++	mac[0] = 0x48;
++	mac[1] = 0xda;
++	mac[2] = 0x35;
++	mac[3] = (crc >> 16) & 0xff;
++	mac[4] = (crc >> 8) & 0xff;
++	mac[5] = crc & 0xff;
++}
+diff --git a/board/sophgo/licheerv_nano/ethernet.h b/board/sophgo/licheerv_nano/ethernet.h
+index 7b21f1b..6c21842 100644
+--- a/board/sophgo/licheerv_nano/ethernet.h
++++ b/board/sophgo/licheerv_nano/ethernet.h
+@@ -6,6 +6,9 @@
+ #ifndef __CV1800B_ETHERNET_H
+ #define __CV1800B_ETHERNET_H
+ 
++#include <linux/types.h>
++
+ void cv1800b_ephy_init(void);
++void cv1800b_derive_mac(u8 mac[6]);
+ 
+ #endif
+diff --git a/configs/sipeed_licheerv_nano_defconfig b/configs/sipeed_licheerv_nano_defconfig
+index 9aa3ede..1c7876e 100644
+--- a/configs/sipeed_licheerv_nano_defconfig
++++ b/configs/sipeed_licheerv_nano_defconfig
+@@ -45,3 +45,4 @@ CONFIG_SPI=y
+ CONFIG_CV1800B_SPIF=y
+ CONFIG_SYSRESET=y
+ CONFIG_SYSRESET_CV1800B=y
++CONFIG_OF_BOARD_SETUP=y
