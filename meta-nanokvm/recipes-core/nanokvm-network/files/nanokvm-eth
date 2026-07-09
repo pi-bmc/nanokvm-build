@@ -34,7 +34,55 @@ EOF
     echo "$(( (gwnum>>24)&255 )).$(( (gwnum>>16)&255 )).$(( (gwnum>>8)&255 )).$(( gwnum&255 ))"
 }
 
+# Registered OUI (first 24 bits) for this hardware. eth0's lower 24 bits are
+# filled from the immutable SoC eFUSE, giving a globally-unique, stable address
+# under the owned OUI -- 48:da:35:xx:xx:xx. Change MAC_OUI if the assigned OUI
+# differs. It must be a unicast, universally-administered prefix: octet 0 with
+# bit0 (I/G) = 0 and bit1 (U/L) = 0, e.g. 0x48.
+MAC_OUI="48:da:35"
+
+# Give eth0 a stable MAC so the DHCP lease (and IP) does not cycle. Mainline
+# U-Boot and stmmac provide no MAC for gmac0, so the kernel otherwise synthesises
+# a fresh random locally-administered address on every boot. Resolution order:
+#   1. /boot/eth.mac        -- an exact address assigned/printed for this unit
+#                              (one "xx:xx:xx:xx:xx:xx" line), used verbatim.
+#   2. MAC_OUI + eFUSE hash -- OUI kept, lower 3 bytes from a hash of the eFUSE
+#                              shadow (immutable per chip => unique + stable
+#                              across reboots and reflashes). The sophgo-cv1800
+#                              nvmem driver exposes the eFUSE and handles its
+#                              clock gating (a raw read would stall the bus).
+# If neither source is available the function is a no-op and the kernel's random
+# MAC behaviour is unchanged.
+set_stable_mac() {
+    _mac=
+    # 1. Exact per-unit override (e.g. the address on the board's label).
+    if [ -s /boot/eth.mac ]; then
+        _mac=$(clean_line "$(cat /boot/eth.mac)")
+    else
+        # 2. Derive the lower 24 bits from the eFUSE, under the fixed OUI.
+        _nv=
+        for _f in /sys/bus/nvmem/devices/*efuse*/nvmem; do
+            [ -r "$_f" ] && { _nv="$_f"; break; }
+        done
+        [ -n "$_nv" ] || return 1
+        _h=$(sha256sum "$_nv" 2>/dev/null | cut -c1-6)
+        [ "${#_h}" -eq 6 ] || return 1
+        _mac="${MAC_OUI}:$(echo "$_h" | sed 's/\(..\)/\1:/g; s/:$//')"
+    fi
+    # Require a well-formed xx:xx:xx:xx:xx:xx before touching the interface.
+    case "$_mac" in
+        [0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]) ;;
+        *) return 1 ;;
+    esac
+    ip link set dev eth0 down 2>/dev/null
+    if ip link set dev eth0 address "$_mac" 2>/dev/null; then
+        echo "nanokvm-eth: eth0 MAC set to $_mac"
+    fi
+    ip link set dev eth0 up 2>/dev/null
+}
+
 start() {
+    set_stable_mac
     ip addr flush dev eth0 2>/dev/null
     if [ -e /boot/eth.nodhcp ]; then
         while IFS= read -r line || [ -n "$line" ]; do

@@ -25,7 +25,7 @@ diff --git a/arch/riscv/boot/dts/sophgo/sg2002-licheerv-nano-b.dts b/arch/riscv/
 index b185377..d093ecb 100644
 --- a/arch/riscv/boot/dts/sophgo/sg2002-licheerv-nano-b.dts
 +++ b/arch/riscv/boot/dts/sophgo/sg2002-licheerv-nano-b.dts
-@@ -95,6 +95,89 @@
+@@ -95,6 +95,142 @@
  };
  
  &usb {
@@ -62,6 +62,31 @@ index b185377..d093ecb 100644
 +			bias-pull-up;
 +			drive-strength-microamp = <10800>;
 +			power-source = <3300>;
++		};
++	};
++
++	gpio0_cfg: gpio0-cfg {
++		gpio0-pins {
++			/*
++			 * NanoKVM BMC power/reset/LED control lines. This board
++			 * has no eMMC (sdhci1 disabled), so the eMMC pads are
++			 * repurposed as XGPIOA outputs (funcsel 3 = XGPIO). There
++			 * is no gpio-ranges / gpio_request_enable path on this SoC
++			 * (cv1800_pmx_ops is strict with no GPIO hook), so the
++			 * dw-apb-gpio lines only reach the pads once these are
++			 * explicitly muxed to GPIO -- applied via gpio0's default
++			 * pinctrl state below. The app (server/config/hardware.go)
++			 * drives, on gpiochip0 (base 512):
++			 *   EMMC_CMD  = XGPIOA[23] (gpio535) Power
++			 *   EMMC_DAT1 = XGPIOA[24] (gpio536) Power LED
++			 *   EMMC_DAT0 = XGPIOA[25] (gpio537) HDD LED / Reset
++			 *   EMMC_DAT3 = XGPIOA[27] (gpio539) Reset
++			 */
++			pinmux = <PINMUX(PIN_EMMC_CMD, 3)>,
++				 <PINMUX(PIN_EMMC_DAT1, 3)>,
++				 <PINMUX(PIN_EMMC_DAT0, 3)>,
++				 <PINMUX(PIN_EMMC_DAT3, 3)>;
++			bias-disable;
 +		};
 +	};
 +};
@@ -111,6 +136,34 @@ index b185377..d093ecb 100644
 +	pinctrl-0 = <&uart1_cfg>;
 +	pinctrl-names = "default";
 +	status = "okay";
++};
++
++&gpio0 {
++	/*
++	 * Apply gpio0_cfg as the default pinctrl state so the BMC power/reset/
++	 * LED pads are muxed to XGPIO when the dw-apb-gpio controller probes.
++	 * Without this the gpiochip0 lines toggle only the internal signal and
++	 * never drive the pins (no automatic pad-to-GPIO muxing on this SoC).
++	 */
++	pinctrl-0 = <&gpio0_cfg>;
++	pinctrl-names = "default";
++};
++
++&{/soc} {
++	/*
++	 * eFUSE controller, exposed read-only via nvmem (0006 patch). Present
++	 * so a stable per-chip Ethernet MAC can be derived from immutable fuse
++	 * data: mainline U-Boot and stmmac supply no MAC, so without a fixed
++	 * source stmmac invents a fresh random locally-administered address on
++	 * every boot and the DHCP lease cycles. Clock-gated -- the driver
++	 * enables CLK_EFUSE/CLK_APB_EFUSE around each read (an ungated access to
++	 * this block stalls the APB/AXI bus).
++	 */
++	efuse: efuse@3050000 {
++		compatible = "sophgo,cv1800b-efuse";
++		reg = <0x03050000 0x1000>;
++		clocks = <&clk CLK_EFUSE>, <&clk CLK_APB_EFUSE>;
++	};
 +};
 +
 +&mdio {
