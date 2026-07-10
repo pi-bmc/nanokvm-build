@@ -19,8 +19,14 @@ PIDFILE=/var/run/ssdpd.pid
 case "$1" in
     start)
         echo -n "Starting $NAME: "
-        # ssdpd backgrounds itself and writes $PIDFILE.
-        start-stop-daemon -S -x "$DAEMON" -- -p "$PIDFILE" \
+        # ssdpd backgrounds itself and writes $PIDFILE (-P; lowercase -p is
+        # the presentationURL, which this script used to set to the pidfile
+        # path by mistake -- stop only worked because ssdpd's default pidfile
+        # happens to be the same path). The trailing "eth0" restricts SSDP to
+        # the management LAN: usb0 is the point-to-point link to the managed
+        # host, which reaches the BMC at its fixed 169.254.10.1 address and
+        # needs no discovery.
+        start-stop-daemon -S -x "$DAEMON" -- -P "$PIDFILE" eth0 \
             && echo "OK" || echo "FAIL"
         ;;
     stop)
