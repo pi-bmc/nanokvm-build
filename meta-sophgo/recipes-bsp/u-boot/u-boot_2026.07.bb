@@ -13,11 +13,21 @@ FILESEXTRAPATHS:prepend := "${THISDIR}/files:"
 # apply here): the LicheeRV Nano board landed upstream after 2024.01.
 SRC_URI = "git://source.denx.de/u-boot/u-boot.git;protocol=https;branch=master \
            file://0001-mmc-cv1800b-honor-no-1-8-v.patch \
-           file://0002-licheerv-nano-raise-load-addrs.patch \
            file://0003-licheerv-nano-cap-sdhci0-to-default-speed.patch \
            file://0004-licheerv-nano-init-internal-ephy.patch \
            file://0005-licheerv-nano-efuse-mac.patch \
            "
+
+# 0002-licheerv-nano-raise-load-addrs.patch is gone. It existed because the old
+# ~28 MiB FIT (boot.sd) staged at the stock kernel_addr_r=0x81000000 overlapped
+# the kernel's own 0x80200000 run region, so bootm aborted with "new format
+# image overwritten". The kernel is now trimmed to fit the stock window
+# (kernel_addr_r=0x81000000, fdt_addr_r=0x82000000, scriptaddr=0x80c00000) and
+# is loaded as a raw Image via booti, so the upstream addresses stand. The
+# linux-sophgo bbappend enforces the size budget that makes this safe.
+#
+# Patch numbering is left as-is rather than resequenced, so the remaining files
+# keep matching the commit history that introduced them.
 # v2026.07
 SRCREV = "ece349ade2973e220f524ce59e59711cc919263f"
 
