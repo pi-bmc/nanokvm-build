@@ -3,7 +3,7 @@ DESCRIPTION = "Brings up the NanoKVM USB device gadget (HID keyboard/mouse/ \
 touchpad, RNDIS network, mass-storage virtual media) via configfs, and the \
 filesystem setup (mount /boot, configfs, debugfs; create/mount the /data \
 partition). Also deploys the boot-partition config files the gadget/app read \
-(board, hostname.prefix, ver, usb.disk0, usb.keyboard, usb.mouse, usb.rndis0). \
+(board, hostname.prefix, ver, usb.keyboard, usb.mouse, usb.rndis0). \
 Vendored from pi-bmc/nanokvm-app packaging/etc/init.d (S01fs, S03usbdev)."
 LICENSE = "GPL-3.0-only"
 LIC_FILES_CHKSUM = "file://${COMMON_LICENSE_DIR}/GPL-3.0-only;md5=c79ff39f19dfec6d293b95dea7b07891"
@@ -14,7 +14,6 @@ SRC_URI = " \
     file://board \
     file://extlinux.conf \
     file://hostname.prefix \
-    file://usb.disk0 \
     file://usb.keyboard \
     file://usb.mouse \
     file://usb.rndis0 \
@@ -42,7 +41,7 @@ do_install() {
 # so deploy them to DEPLOY_DIR_IMAGE for wic's IMAGE_BOOT_FILES.
 do_deploy() {
     install -d ${DEPLOYDIR}
-    for f in board hostname.prefix usb.disk0 usb.keyboard usb.mouse usb.rndis0 extlinux.conf; do
+    for f in board hostname.prefix usb.keyboard usb.mouse usb.rndis0 extlinux.conf; do
         install -m 0644 ${WORKDIR}/$f ${DEPLOYDIR}/$f
     done
     # Firmware version string (no build timestamp -> reproducible).

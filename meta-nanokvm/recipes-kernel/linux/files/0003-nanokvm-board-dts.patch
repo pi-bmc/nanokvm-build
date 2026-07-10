@@ -25,7 +25,7 @@ diff --git a/arch/riscv/boot/dts/sophgo/sg2002-licheerv-nano-b.dts b/arch/riscv/
 index b185377..d093ecb 100644
 --- a/arch/riscv/boot/dts/sophgo/sg2002-licheerv-nano-b.dts
 +++ b/arch/riscv/boot/dts/sophgo/sg2002-licheerv-nano-b.dts
-@@ -95,6 +95,124 @@
+@@ -95,6 +95,82 @@
  };
  
  &usb {
@@ -37,9 +37,6 @@ index b185377..d093ecb 100644
 +&pinctrl {
 +	i2c1_cfg: i2c1-cfg {
 +		i2c1-pins {
-+			/* SDIO1 pads repurposed as I2C1 for the slave EEPROM
-+			 * (recipes-core/i2c-eeprom): SD1_D3->IIC1_SCL,
-+			 * SD1_D0->IIC1_SDA, both funcsel 2. */
 +			pinmux = <PINMUX(PIN_SD1_D3, 2)>,
 +				 <PINMUX(PIN_SD1_D0, 2)>;
 +			bias-pull-up;
@@ -50,13 +47,6 @@ index b185377..d093ecb 100644
 +
 +	uart1_cfg: uart1-cfg {
 +		uart1-pins {
-+			/* Target-host (Raspberry Pi) serial console. The Pi UART
-+			 * is wired to the JTAG pads: JTAG_CPU_TMS -> UART1_TX,
-+			 * JTAG_CPU_TCK -> UART1_RX, both funcsel 6. This steals
-+			 * the pads from CPU JTAG, which is unused on this board.
-+			 * Nothing muxes UART1 otherwise (the FSBL leaves these
-+			 * pads at funcsel 0), so without this group ttyS1 opens
-+			 * but no data reaches the Pi. */
 +			pinmux = <PINMUX(PIN_JTAG_CPU_TMS, 6)>,
 +				 <PINMUX(PIN_JTAG_CPU_TCK, 6)>;
 +			bias-pull-up;
@@ -67,26 +57,13 @@ index b185377..d093ecb 100644
 +
 +	gpio0_cfg: gpio0-cfg {
 +		gpio0-pins {
-+			/*
-+			 * NanoKVM BMC power/reset/LED control lines. This board
-+			 * has no eMMC (sdhci1 disabled), so the eMMC pads are
-+			 * repurposed as XGPIOA outputs (funcsel 3 = XGPIO). There
-+			 * is no gpio-ranges / gpio_request_enable path on this SoC
-+			 * (cv1800_pmx_ops is strict with no GPIO hook), so the
-+			 * dw-apb-gpio lines only reach the pads once these are
-+			 * explicitly muxed to GPIO -- applied via gpio0's default
-+			 * pinctrl state below. The app (server/config/hardware.go)
-+			 * drives, on gpiochip0 (base 512):
-+			 *   EMMC_CMD  = XGPIOA[23] (gpio535) Power
-+			 *   EMMC_DAT1 = XGPIOA[24] (gpio536) Power LED
-+			 *   EMMC_DAT0 = XGPIOA[25] (gpio537) HDD LED / Reset
-+			 *   EMMC_DAT3 = XGPIOA[27] (gpio539) Reset
-+			 */
 +			pinmux = <PINMUX(PIN_EMMC_CMD, 3)>,
 +				 <PINMUX(PIN_EMMC_DAT1, 3)>,
 +				 <PINMUX(PIN_EMMC_DAT0, 3)>,
 +				 <PINMUX(PIN_EMMC_DAT3, 3)>;
-+			bias-disable;
++			bias-pull-up;
++			drive-strength-microamp = <10800>;
++			power-source = <3300>;
 +		};
 +	};
 +};
@@ -96,56 +73,37 @@ index b185377..d093ecb 100644
 +	pinctrl-names = "default";
 +	status = "okay";
 +
-+	/*
-+	 * Present an I2C slave EEPROM to the external host (Raspberry Pi). The
-+	 * I2C_OWN_SLAVE_ADDRESS (1 << 30) flag in reg makes the DesignWare
-+	 * controller probe in SLAVE mode (i2c_detect_slave_mode); without a
-+	 * slave-flagged child it probes as master and i2c_slave_register() -> -95.
-+	 * i2c-slave-eeprom has no of_match, but the i2c core falls back to the
-+	 * id_table via the modalias, so "linux,slave-24c02" binds slave-24c02.
-+	 */
 +	eeprom@50 {
-+		compatible = "linux,slave-24c02";
-+		reg = <0x40000050>; /* 0x50 | I2C_OWN_SLAVE_ADDRESS */
++		compatible = "linux,slave-24c512";
++		reg = <0x40000050>;
 +	};
 +};
 +
 +&gmac0 {
-+	/*
-+	 * Built-in SG2002 dwmac + internal 10/100 EPHY. Enable the node (and the
-+	 * mdio bus below) and let upstream drive it: stmmac runs the MAC and the
-+	 * internal PHY binds the generic PHY driver. The EPHY analog front end is
-+	 * brought up by U-Boot (cv1800b_ephy_init), so no in-kernel PHY driver is
-+	 * needed. Uses the upstream phy-mode ("internal", from cv180x.dtsi).
-+	 */
 +	status = "okay";
 +};
 +
 +&uart1 {
-+	/*
-+	 * Target-host serial console, exposed by the BMC app as /dev/ttyS1
-+	 * (server/config/default.go Device default). The node already carries
-+	 * reg/interrupts/clocks/resets from cv180x.dtsi -- it was only marked
-+	 * "disabled", so with no real device behind it /dev/ttyS1 was a phantom
-+	 * legacy-8250 slot and any termios ioctl returned -EIO ("serial error:
-+	 * ... getting term settings: input/output error"). Enabling it lets
-+	 * dw-apb-uart probe and register a real ttyS1; uart1_cfg routes the
-+	 * TX/RX signals onto the JTAG pads wired to the Pi.
-+	 */
 +	pinctrl-0 = <&uart1_cfg>;
 +	pinctrl-names = "default";
 +	status = "okay";
 +};
 +
 +&gpio0 {
-+	/*
-+	 * Apply gpio0_cfg as the default pinctrl state so the BMC power/reset/
-+	 * LED pads are muxed to XGPIO when the dw-apb-gpio controller probes.
-+	 * Without this the gpiochip0 lines toggle only the internal signal and
-+	 * never drive the pins (no automatic pad-to-GPIO muxing on this SoC).
-+	 */
 +	pinctrl-0 = <&gpio0_cfg>;
 +	pinctrl-names = "default";
++};
++
++&porta {
++	gpio-line-names =
++		"", "", "", "", "", "", "", "",
++		"", "", "", "", "", "", "", "",
++		"", "", "", "", "", "", "",
++		"power-button",
++		"power-led",
++		"hdd-led",
++		"",
++		"reset-button";
 +};
 +
 +&mdio {

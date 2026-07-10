@@ -54,7 +54,6 @@ IMAGE_INSTALL:append = " \
     ethtool \
     iproute2 \
     iputils \
-    ipmitool \
     iperf3 \
     mtr \
     socat \
@@ -168,11 +167,6 @@ IMAGE_INSTALL:append = " \
     "
 
 # --- NanoKVM application ---
-# NanoKVM-Server (kvmapp) provides its own IPMI server (port 623), so the
-# standalone IPMI init scripts are dropped: ipmi-sim (its only content is the
-# S99ipmi_sim init script + lanserv config) and openipmi (ships the /etc/init.d/
-# ipmi service and is otherwise only pulled in as ipmi-sim's dependency). They
-# would conflict with kvmapp on port 623. The ipmitool CLI is kept (see above).
 IMAGE_INSTALL:append = " \
     nanokvm-server \
     nanokvm-gadget \
@@ -192,7 +186,7 @@ do_image_wic[depends] += "fsbl:do_deploy linux-sophgo:do_deploy"
 # them on the FAT boot partition next to fip.bin/boot.sd. Read at runtime from
 # /boot by the USB gadget init (S03usbdev) and the app. extlinux.conf is the
 # mainline U-Boot boot menu (sysboot/distro boot scans /extlinux/extlinux.conf).
-IMAGE_BOOT_FILES:append = " board hostname.prefix ver usb.disk0 usb.keyboard usb.mouse usb.rndis0 extlinux.conf;extlinux/extlinux.conf"
+IMAGE_BOOT_FILES:append = " board hostname.prefix ver usb.keyboard usb.mouse usb.rndis0 extlinux.conf;extlinux/extlinux.conf"
 do_image_wic[depends] += "nanokvm-gadget:do_deploy"
 
 # --- Publish under the original LicheeRV-Nano-Build image name ---

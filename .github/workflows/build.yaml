@@ -281,7 +281,7 @@ jobs:
           fi
           kas shell kas.yml -c "bitbake \
             nanokvm-server \
-            ipmi-sim input-event-daemon ssdp-responder uvc-gadget \
+            input-event-daemon ssdp-responder uvc-gadget \
             cvi-pinmux sg2002-codec-firmware sophgo-middleware cvi-rtsp axp2101"
 
       - name: Save Yocto OCI caches

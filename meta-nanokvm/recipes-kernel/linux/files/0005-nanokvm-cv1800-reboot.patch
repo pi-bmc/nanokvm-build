@@ -17,7 +17,7 @@ diff --git a/drivers/soc/sophgo/cv1800-rtcsys.c b/drivers/soc/sophgo/cv1800-rtcs
 index fdae2e2a61c5..fb27d9221100 100644
 --- a/drivers/soc/sophgo/cv1800-rtcsys.c
 +++ b/drivers/soc/sophgo/cv1800-rtcsys.c
-@@ -10,10 +10,42 @@
+@@ -10,10 +10,34 @@
   *
   */
  
@@ -31,14 +31,6 @@ index fdae2e2a61c5..fb27d9221100 100644
 +#include <linux/reboot.h>
 +#include <linux/regmap.h>
 +
-+/*
-+ * The RTC/PoR block is also the chip reset state machine. Mainline has no reboot
-+ * method for CV1800/SG2002 (generic OpenSBI has no cvitek SRST reset device and
-+ * cv180x.dtsi has no reboot/watchdog node), so machine_restart() hangs. Drive the
-+ * vendor warm-reset sequence here: arm the warm-reset request, write the control
-+ * unlock key, then set the warm-reset bit. Offsets are relative to the
-+ * rtc@5025000 "syscon" node (its regmap covers the 0x2000 window).
-+ */
 +#define RTC_CTRL0_UNLOCK	0x04
 +#define  RTC_CTRL0_UNLOCK_KEY	0xab18
 +#define RTC_CTRL0		0x08
@@ -60,7 +52,7 @@ index fdae2e2a61c5..fb27d9221100 100644
  
  static struct resource cv1800_rtcsys_irq_resources[] = {
  	DEFINE_RES_IRQ_NAMED(0, "alarm"),
-@@ -29,7 +61,8 @@ static const struct mfd_cell cv1800_rtcsys_subdev[] = {
+@@ -29,7 +53,8 @@ static const struct mfd_cell cv1800_rtcsys_subdev[] = {
  
  static int cv1800_rtcsys_probe(struct platform_device *pdev)
  {
@@ -70,7 +62,7 @@ index fdae2e2a61c5..fb27d9221100 100644
  
  	irq = platform_get_irq_byname(pdev, "alarm");
  	if (irq < 0)
-@@ -37,10 +70,24 @@ static int cv1800_rtcsys_probe(struct platform_device *pdev)
+@@ -37,10 +62,19 @@ static int cv1800_rtcsys_probe(struct platform_device *pdev)
  	cv1800_rtcsys_irq_resources[0].start = irq;
  	cv1800_rtcsys_irq_resources[0].end = irq;
  
@@ -85,11 +77,6 @@ index fdae2e2a61c5..fb27d9221100 100644
 +	if (ret)
 +		return ret;
 +
-+	/*
-+	 * The RTC node is a "syscon", so the same regmap the RTC cell uses also
-+	 * reaches the reset registers. Register a restart handler at priority
-+	 * 200 -- above the SBI SRST handler (192), which no-ops on this SoC.
-+	 */
 +	map = device_node_to_regmap(pdev->dev.of_node);
 +	if (!IS_ERR(map))
 +		devm_register_sys_off_handler(&pdev->dev, SYS_OFF_MODE_RESTART,
