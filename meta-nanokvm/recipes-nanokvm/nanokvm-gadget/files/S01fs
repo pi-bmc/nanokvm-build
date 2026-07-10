@@ -1,5 +1,5 @@
 #!/bin/sh
-# Filesystem initialization for NanoKVM BMC
+# First-boot filesystem setup for NanoKVM BMC
 #
 # Partition layout on /dev/mmcblk0:
 #   p1 — /boot           (vfat, factory image)
@@ -7,11 +7,20 @@
 #   p3 — /data           (exfat, occupies all remaining space)
 #                        Created on first boot. Holds firmware images,
 #                        ISO media, configs, and persistent BMC state.
+#
+# This deliberately stays a sysvinit script rather than becoming a udev rule.
+# udev runs RUN+= programs synchronously on the event worker and kills them at
+# udev_event_timeout; parted + resize2fs + mkfs.exfat on a slow SD card blow
+# straight through that and would stall the whole event queue behind them.
+# Partitioning is a one-shot provisioning step, not a device-arrival reaction.
+#
+# The steady-state mounts that used to live here (/boot, configfs, debugfs) are
+# now in /etc/fstab, so mountall.sh (rcS S03) does them before udev starts
+# (rcS S04). That ordering is what lets the USB-gadget udev rule read
+# /boot/usb.* during coldplug — see 60-nanokvm-usbgadget.rules.
 
 case "$1" in
     start)
-        . /etc/profile
-
         printf "Resizing rootfs partition (p2): "
         # Pin p2 to a deterministic 8192 MB so any leftover space at the
         # end of the device is available for the data partition. parted is
@@ -23,19 +32,12 @@ case "$1" in
         (resize2fs /dev/mmcblk0p2 >/dev/null 2>&1) &
         echo "OK"
 
-        printf "Mounting boot/configfs/debugfs: "
-        mkdir -p /boot
-        mount -t vfat /dev/mmcblk0p1 /boot 2>/dev/null
-        mount -t configfs configfs /sys/kernel/config 2>/dev/null
-        mount -t debugfs debugfs /sys/kernel/debug 2>/dev/null
-        echo "OK"
-
         # Create p3 on first boot using all remaining space after p2.
         if [ ! -e /dev/mmcblk0p3 ]; then
             printf "Creating data partition (p3): "
             parted -s /dev/mmcblk0 "mkpart primary 8193MB 100%" >/dev/null 2>&1
             # Wait briefly for the kernel to expose the new partition node.
-            for i in 1 2 3 4 5; do
+            for _ in 1 2 3 4 5; do
                 [ -e /dev/mmcblk0p3 ] && break
                 sleep 1
             done
@@ -43,7 +45,8 @@ case "$1" in
             echo "OK"
         fi
 
-        # Mount /data and ensure BMC staging directories exist.
+        # Mount /data and ensure BMC staging directories exist. Not in fstab:
+        # p3 does not exist until the block above creates it on first boot.
         if [ -e /dev/mmcblk0p3 ]; then
             printf "Mounting /data: "
             mkdir -p /data

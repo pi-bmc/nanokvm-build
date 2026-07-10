@@ -35,18 +35,60 @@ SRC_URI:append:sg2002-licheervnano = " \
 # kernel` (not kernel-yocto) does not auto-apply .cfg fragments, so do it here;
 # do_compile's syncconfig then resolves dependencies.
 #
-# merge_config.sh -m warns (does not fail) when a symbol it was asked to set
-# ends up at a different value because kconfig dependencies overrode it. Those
-# warnings matter here: a silently-dropped "is not set" is exactly how the Image
-# regrows. Promote them to a build failure.
+# Then verify the fragment actually took. This check is not paranoia -- kconfig
+# silently ignored three requests on the first run of this recipe:
+#
+#   * `select` outranks an explicit n. CONFIG_PORTABLE (default !NONPORTABLE)
+#     does `select EFI`, so "# CONFIG_EFI is not set" was discarded.
+#   * an unmet `depends on` makes a symbol invisible, and a request to enable an
+#     invisible symbol is dropped without a message. CONFIG_NFT_NAT depends on
+#     NF_TABLES_IPV4 || NF_TABLES_IPV6; CONFIG_USB_CONFIGFS_F_UVC depends on
+#     VIDEO_DEV.
+#
+# merge_config.sh's own post-check would have caught these, but `-m` (merge
+# only) skips it, and its "Value of X is redefined by fragment" lines are just
+# informational -- they fire for every intentional override. So compare the
+# fragment against the *final* .config ourselves, after olddefconfig has run.
+#
+# NB: no ${braces} on shell locals anywhere in these tasks -- bitbake parses the
+# body for datastore references and would try to expand them. Same reason there
+# is no $(( )) arithmetic (it raises NotImplementedError at parse time).
 do_configure:append:sg2002-licheervnano() {
     "${S}/scripts/kconfig/merge_config.sh" -m -O "${B}" \
-        "${B}/.config" "${WORKDIR}/nanokvm.cfg" 2>&1 | tee "${B}/merge_config.log"
+        "${B}/.config" "${WORKDIR}/nanokvm.cfg"
     oe_runmake -C ${S} O=${B} olddefconfig
 
-    if grep -q '^Value requested for' "${B}/merge_config.log"; then
-        bbwarn "nanokvm.cfg: kconfig overrode requested values:"
-        bbwarn "$(grep '^Value requested for' ${B}/merge_config.log)"
+    cfg="${B}/.config"
+    frag="${WORKDIR}/nanokvm.cfg"
+    mismatch="${B}/nanokvm-cfg-mismatch.txt"
+    : > "$mismatch"
+
+    # Requested OFF, spelled either "# CONFIG_X is not set" or "CONFIG_X=n" --
+    # kconfig always writes the former back, so the latter can never match
+    # literally. Both mean the same thing; check them the same way. A symbol
+    # absent from .config entirely is fine: absent means off.
+    { sed -n 's/^# \(CONFIG_[A-Za-z0-9_]*\) is not set$/\1/p' "$frag"
+      sed -n 's/^\(CONFIG_[A-Za-z0-9_]*\)=n$/\1/p' "$frag"
+    } | sort -u | while read -r sym; do
+        if grep -q "^$sym=" "$cfg"; then
+            echo "$sym: asked for OFF, got $(grep -m1 "^$sym=" $cfg)" >> "$mismatch"
+        fi
+    done
+
+    # Requested a value but the final .config disagrees (or dropped it).
+    sed -n 's/^\(CONFIG_[A-Za-z0-9_]*=.*\)$/\1/p' "$frag" | grep -v '=n$' | while read -r want; do
+        if ! grep -qxF "$want" "$cfg"; then
+            sym=$(echo "$want" | cut -d= -f1)
+            got=$(grep -m1 "^$sym=" "$cfg" || echo "<unset/invisible>")
+            echo "$sym: asked for $want, got $got" >> "$mismatch"
+        fi
+    done
+
+    if [ -s "$mismatch" ]; then
+        while read -r l; do bbwarn "nanokvm.cfg: $l"; done < "$mismatch"
+        bbfatal "nanokvm.cfg: kconfig did not honour the requests above." \
+                "Either a select forces the symbol on, or an unmet depends-on" \
+                "makes it invisible. Fix the fragment; do not ignore this."
     fi
 }
 
@@ -61,26 +103,33 @@ do_configure:append:sg2002-licheervnano() {
 # overwrites the DTB and the kernel dies before the console is up.
 KERNEL_IMAGE_MAXSIZE_BYTES = "14680064"
 
+# NB: no $(( )) arithmetic and no ${braces} on shell locals below. bitbake parses
+# shell task bodies to harvest variable references: it raises
+# NotImplementedError on "$((", and it would try to resolve "${filesz}" as a
+# datastore variable. Plain $var and expr(1) keep the parser happy.
 do_compile:append:sg2002-licheervnano() {
     kimage="${B}/arch/riscv/boot/Image"
-    [ -f "${kimage}" ] || kimage="$(find ${B} -path '*/arch/riscv/boot/Image' -type f | head -1)"
-    [ -f "${kimage}" ] || bbfatal "kernel size check: no Image found under ${B}"
+    [ -f "$kimage" ] || kimage="$(find ${B} -path '*/arch/riscv/boot/Image' -type f | head -1)"
+    [ -f "$kimage" ] || bbfatal "kernel size check: no Image found under ${B}"
 
-    filesz=$(stat -c %s "${kimage}")
+    filesz=$(stat -c %s "$kimage")
 
-    # RISC-V Image header (Documentation/riscv/boot-image-header.rst):
+    # RISC-V Image header (Documentation/arch/riscv/boot-image-header.rst):
     #   u32 code0; u32 code1; u64 text_offset; u64 image_size; ...
-    # image_size is a little-endian u64 at byte offset 16.
-    imagesz=$(od -An -tu8 -j16 -N8 "${kimage}" | tr -d ' ')
+    # image_size (text+data+bss) is a little-endian u64 at byte offset 16. It is
+    # the larger of the two numbers and the one that actually has to clear
+    # fdt_addr_r once booti relocates the kernel to 0x80200000.
+    imagesz=$(od -An -tu8 -j16 -N8 "$kimage" | tr -d ' ')
+    budget="${KERNEL_IMAGE_MAXSIZE_BYTES}"
 
-    bbplain "kernel Image: file=$((filesz / 1024)) KiB  image_size=$((imagesz / 1024)) KiB  budget=$((${KERNEL_IMAGE_MAXSIZE_BYTES} / 1024)) KiB"
+    bbplain "kernel Image: file=$(expr $filesz / 1024) KiB  image_size=$(expr $imagesz / 1024) KiB  budget=$(expr $budget / 1024) KiB"
 
-    for sz in "${filesz}" "${imagesz}"; do
-        if [ "${sz}" -gt "${KERNEL_IMAGE_MAXSIZE_BYTES}" ]; then
-            bbfatal "kernel too large: ${sz} B > ${KERNEL_IMAGE_MAXSIZE_BYTES} B budget." \
-                    "It would overrun fdt_addr_r=0x82000000 when U-Boot stages it at" \
-                    "kernel_addr_r=0x81000000. Trim nanokvm.cfg, or raise the load" \
-                    "addresses again in the u-boot recipe."
+    for sz in "$filesz" "$imagesz"; do
+        if [ "$sz" -gt "$budget" ]; then
+            bbfatal "kernel too large: $sz B > $budget B budget. It would overrun" \
+                    "fdt_addr_r=0x82000000 when U-Boot stages the Image at" \
+                    "kernel_addr_r=0x81000000. Trim nanokvm.cfg, or restore the raised" \
+                    "load addresses in the u-boot recipe."
         fi
     done
 }

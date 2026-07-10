@@ -90,6 +90,14 @@ do_install() {
     install -d ${D}${sysconfdir}/init.d
     install -m 0755 ${WORKDIR}/nanokvm.init \
         ${D}${sysconfdir}/init.d/nanokvm
+
+    # Compat name. The server restarts itself by shelling out to the literal
+    # path "/etc/init.d/S95nanokvm restart" -- server/service/vm/tls.go,
+    # service/application/update.go (x2) and update_offline.go. update-rc.d
+    # names the script "nanokvm" and puts the S95 prefix only on the rc?.d
+    # symlinks, so that path did not exist and every self-restart (after a TLS
+    # cert change or an app upgrade) silently did nothing.
+    ln -sf nanokvm ${D}${sysconfdir}/init.d/S95nanokvm
 }
 
 INITSCRIPT_NAME = "nanokvm"
@@ -104,4 +112,5 @@ FILES:${PN} = " \
     ${bindir}/rpiboot \
     ${bindir}/fw_env \
     ${sysconfdir}/init.d/nanokvm \
+    ${sysconfdir}/init.d/S95nanokvm \
     "

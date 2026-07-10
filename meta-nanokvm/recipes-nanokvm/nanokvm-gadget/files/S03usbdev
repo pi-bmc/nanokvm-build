@@ -1,9 +1,52 @@
 #!/bin/sh
 # kvmhwd Rev2.1
+#
+# Builds the NanoKVM USB device gadget under configfs.
+#
+# Invoked two ways, and it must keep working under both:
+#
+#   1. udev, on the udc "add" event (60-nanokvm-usbgadget.rules). This is how it
+#      runs at boot; there is no rc5.d symlink any more. udev exports the UDC
+#      name as $NANOKVM_UDC and runs us with a minimal environment, so nothing
+#      here may rely on a login shell (/etc/profile is NOT sourced) and nothing
+#      may block for long — udev kills RUN+= programs at udev_event_timeout and
+#      stalls the event queue behind them.
+#
+#   2. the NanoKVM server, which shells out to "/etc/init.d/S03usbdev stop" and
+#      "... start" to re-arm virtual media (server/service/vm/virtual-device.go).
+#      That hardcoded path is why this file is installed under its Buildroot-era
+#      name rather than being renamed.
+#
+# `start` is idempotent: every mkdir is -p or guarded, and the UDC bind is a
+# no-op when already bound.
+
+# configfs normally comes from /etc/fstab (mountall, rcS S03) before udev starts
+# in rcS S04. Guard anyway: the server can call us on a system where someone
+# unmounted it, and the failure would otherwise be a confusing "No such file".
+ensure_configfs() {
+    [ -d /sys/kernel/config/usb_gadget ] && return 0
+    mount -t configfs configfs /sys/kernel/config 2>/dev/null
+    [ -d /sys/kernel/config/usb_gadget ]
+}
+
+# The UDC to bind. udev hands us the exact device via $NANOKVM_UDC; fall back to
+# globbing for the manual/server invocation path.
+pick_udc() {
+    if [ -n "$NANOKVM_UDC" ] && [ -e "/sys/class/udc/$NANOKVM_UDC" ]; then
+        echo "$NANOKVM_UDC"
+        return 0
+    fi
+    for udc in /sys/class/udc/*; do
+        [ -e "$udc" ] || continue
+        echo "${udc##*/}"
+        return 0
+    done
+    return 1
+}
 
 start_usb_dev() {
-    . /etc/profile
     echo "usb mode: device"
+    ensure_configfs || { echo "configfs not available"; exit 1; }
     cd /sys/kernel/config/usb_gadget || { echo "Failed to cd into /sys/kernel/config/usb_gadget"; exit 1; }
 
     mkdir -p g0
@@ -158,10 +201,7 @@ start_usb_dev() {
     if [ ! -e /boot/udc.disable ]; then
         # Bind if not already bound (also re-binds after any unbind above).
         if [ -z "$(cat UDC 2>/dev/null | tr -d '[:space:]')" ]; then
-            for udc in /sys/class/udc/*.usb; do
-                echo "${udc##*/}" >UDC
-                break
-            done
+            udc=$(pick_udc) && echo "$udc" >UDC
         fi
     fi
     # /proc/cviusb/otg_role is a vendor OTG role-switch. On mainline the dwc2
@@ -180,10 +220,7 @@ start_usb_host() {
 restart_usb_dev() {
     echo "" >/sys/kernel/config/usb_gadget/g0/UDC
     sleep 1
-    for udc in /sys/class/udc/*.usb; do
-        echo "${udc##*/}" >/sys/kernel/config/usb_gadget/g0/UDC
-        break
-    done
+    udc=$(pick_udc) && echo "$udc" >/sys/kernel/config/usb_gadget/g0/UDC
     echo "USB Restart OK!"
 }
 

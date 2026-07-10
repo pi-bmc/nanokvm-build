@@ -1,55 +1,41 @@
 #!/bin/sh
 # /etc/network/if-pre-up.d/nanokvm-mac
 #
-# ifupdown pre-up hook: give eth0 a stable, per-board MAC *before* the interface
-# is brought up (and thus before DHCP). Mainline U-Boot and stmmac provide no MAC
-# for gmac0, so the kernel otherwise synthesises a fresh random address on every
-# boot -- the DHCP server sees a new client each time and the lease (and IP)
-# cycle. Setting it here, inside `ifup eth0`, guarantees the first DHCP DISCOVER
-# already carries the stable address, whoever triggers ifup (S01networking or the
-# autonet udev hook). busybox runs the /etc/network/if-pre-up.d/* scripts and
-# exports $IFACE.
+# ifupdown pre-up hook: apply the per-unit MAC override, if one has been placed
+# on the boot partition. Runs inside `ifup eth0`, before ifupdown's dhcp method
+# starts udhcpc, so the first DHCP DISCOVER already carries the final address.
 #
-# MAC resolution:
-#   1. /boot/eth.mac        -- exact address assigned/printed for this unit
-#                              (one "xx:xx:xx:xx:xx:xx" line), used verbatim.
-#   2. MAC_OUI + eFUSE hash -- OUI kept, lower 3 bytes from a hash of the eFUSE
-#                              shadow (immutable per chip => unique + stable
-#                              across reboots and reflashes). The sophgo-cv1800
-#                              nvmem driver exposes the eFUSE and gates its clock.
-# No-op (kernel's random MAC stands) if neither source is available.
+# This script used to *derive* a MAC from the eFUSE when no override existed.
+# That job now belongs to U-Boot: 0005-licheerv-nano-efuse-mac.patch CRCs the
+# eFUSE shadow under the registered OUI and writes the result into the kernel
+# device tree as /soc/ethernet@4070000's local-mac-address (ft_board_setup),
+# which stmmac consumes directly. Keeping the old fallback here was not merely
+# redundant, it was wrong: it hashed the same eFUSE with sha256 rather than CRC,
+# so it computed a *different* stable MAC and overwrote U-Boot's on every boot.
+#
+# What U-Boot does not do is honour an operator override -- ft_board_setup
+# writes the derived address unconditionally, ignoring both `ethaddr` and any
+# file. So that override is all this hook is for. With no /boot/eth.mac it is a
+# no-op and the device-tree address from U-Boot stands.
+#
+# busybox ifupdown runs /etc/network/if-pre-up.d/* and exports $IFACE.
 
 [ "$IFACE" = "eth0" ] || exit 0
+[ -s /boot/eth.mac ] || exit 0
 
-# Registered OUI (first 24 bits). Must be unicast + universally-administered:
-# octet 0 with bit0 (I/G)=0 and bit1 (U/L)=0, e.g. 0x48.
-MAC_OUI="48:da:35"
-
-mac=
-if [ -s /boot/eth.mac ]; then
-    mac=$(sed 's/^[[:space:]]*//;s/[[:space:]]*$//;s/\r//g' /boot/eth.mac | head -n1)
-else
-    nv=
-    for f in /sys/bus/nvmem/devices/*efuse*/nvmem; do
-        [ -r "$f" ] && { nv="$f"; break; }
-    done
-    [ -n "$nv" ] || exit 0
-    h=$(sha256sum "$nv" 2>/dev/null | cut -c1-6)
-    [ "${#h}" -eq 6 ] || exit 0
-    mac="${MAC_OUI}:$(echo "$h" | sed 's/\(..\)/\1:/g; s/:$//')"
-fi
+mac=$(sed 's/^[[:space:]]*//;s/[[:space:]]*$//;s/\r//g' /boot/eth.mac | head -n1)
 
 case "$mac" in
     [0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]) ;;
     *) exit 0 ;;
 esac
 
-# Address can only be changed while the link is down; bring it back up so
+# The address can only be changed while the link is down; bring it back up so
 # ifupdown's dhcp method (which just runs udhcpc, and does not raise the link)
 # finds eth0 ready.
 ip link set dev "$IFACE" down 2>/dev/null
 if ip link set dev "$IFACE" address "$mac" 2>/dev/null; then
-    logger -t nanokvm-mac "$IFACE MAC set to $mac" 2>/dev/null
+    logger -t nanokvm-mac "$IFACE MAC overridden to $mac from /boot/eth.mac" 2>/dev/null
 fi
 ip link set dev "$IFACE" up 2>/dev/null
 exit 0

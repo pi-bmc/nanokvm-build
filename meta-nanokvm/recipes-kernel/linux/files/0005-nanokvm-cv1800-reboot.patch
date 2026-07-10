@@ -1,23 +1,40 @@
 From: NanoKVM build <nbatkins@gmail.com>
 Date: Thu, 9 Jul 2026 00:00:00 +0000
-Subject: [PATCH] soc: sophgo: cv1800-rtcsys: add warm-reset restart handler
+Subject: [PATCH] soc: sophgo: cv1800-rtcsys: add restart and poweroff handlers
 
-Mainline has no reboot method for CV1800/SG2002: generic OpenSBI has no
-cvitek SRST reset device and cv180x.dtsi has no reboot/watchdog node, so
-Linux reboot hangs (RCU stall in machine_restart). The RTC/PoR block is the
-chip reset state machine; register a sys-off restart handler that drives the
-vendor warm-reset sequence (arm req @ +0x10cc, unlock key 0xab18 @ +0x04,
-set warm-reset bit @ +0x08) via the node's existing "syscon" regmap, at
-priority 200 so it precedes the no-op SBI SRST handler (192). No DT change.
+Mainline has no way to reset a CV1800/SG2002. Nothing in-tree covers it:
+
+  * drivers/power/reset/syscon-reboot.c issues one regmap_update_bits(); this
+    SoC needs three ordered writes, one of them a magic unlock key.
+  * the same limit rules out OpenSBI's lib/utils/reset/fdt_reset_syscon.c, and
+    generic OpenSBI ships no cv18xx reset device (only sg2042_hwmon_mcu, a
+    different SoC), so SBI SRST returns not-supported.
+  * drivers/watchdog/dw_wdt.c does export a .restart, but the DW watchdog's
+    reset output is gated by this very RTC block, so arming it needs the same
+    unlock sequence -- and cv180x.dtsi has no watchdog node anyway.
+
+Consequently Linux reboot hangs (RCU stall in machine_restart).
+
+The RTC/PoR block is the chip's reset state machine. Drive it exactly as
+U-Boot's drivers/sysreset/sysreset_cv1800b.c does -- the only other
+implementation of this sequence -- via the regmap the node already exposes
+through its "syscon" compatible: enable the request in the RTC_CORE bank, store
+the 0xab18 unlock key, then write 0xffff0800|<req bit> to RTC_CTRL0. Warm-reset
+is BIT(4) for restart; shutdown is BIT(0) for poweroff.
+
+Restart registers at priority 200 so it precedes riscv's SBI SRST reboot
+notifier (192), which cannot succeed here. Poweroff sits at SYS_OFF_PRIO_HIGH;
+SBI SRST claims SYS_OFF_PRIO_FIRMWARE but returns NOTIFY_DONE when the ecall
+fails, so this handler still runs.
+
+No DT change: the node is already compatible = "sophgo,cv1800b-rtc", "syscon".
 
 Upstream-Status: Pending
 Signed-off-by: NanoKVM build <nbatkins@gmail.com>
 ---
-diff --git a/drivers/soc/sophgo/cv1800-rtcsys.c b/drivers/soc/sophgo/cv1800-rtcsys.c
-index fdae2e2a61c5..fb27d9221100 100644
 --- a/drivers/soc/sophgo/cv1800-rtcsys.c
 +++ b/drivers/soc/sophgo/cv1800-rtcsys.c
-@@ -10,10 +10,34 @@
+@@ -10,10 +10,80 @@
   *
   */
  
@@ -31,38 +48,85 @@ index fdae2e2a61c5..fb27d9221100 100644
 +#include <linux/reboot.h>
 +#include <linux/regmap.h>
 +
-+#define RTC_CTRL0_UNLOCK	0x04
-+#define  RTC_CTRL0_UNLOCK_KEY	0xab18
-+#define RTC_CTRL0		0x08
-+#define  RTC_CTRL0_WARM_RESET	(0xffff0800 | BIT(4))
-+#define RTC_EN_WARM_RST_REQ	0x10cc
++/*
++ * The PoR state machine is driven through two register banks, both inside this
++ * node's 0x2000 "syscon" window (reg = <0x5025000 0x2000>):
++ *
++ *   +0x0000  RTC_CTRL  block (0x05025000)
++ *   +0x1000  RTC_CORE  block (0x05026000)
++ *
++ * A request is raised in two steps: enable the request in RTC_CORE, then write
++ * the matching request bit into RTC_CTRL0 -- which is write-locked until the
++ * magic key is stored in RTC_CTRL0_UNLOCK immediately beforehand.
++ *
++ * This mirrors U-Boot's drivers/sysreset/sysreset_cv1800b.c, the only other
++ * implementation of this sequence. The upper bits of the RTC_CTRL0 value
++ * (0xffff0800) are opaque; U-Boot writes them verbatim and so do we.
++ */
++#define RTC_CTRL0_UNLOCK		0x0004
++#define  RTC_CTRL0_UNLOCK_KEY		0xab18
++#define RTC_CTRL0			0x0008
++#define  RTC_CTRL0_MAGIC		0xffff0800
++#define  RTC_CTRL0_REQ_SHDN		BIT(0)
++#define  RTC_CTRL0_REQ_PWR_CYC		BIT(3)
++#define  RTC_CTRL0_REQ_WARM_RST		BIT(4)
++
++#define RTC_EN_SHDN_REQ			0x10c0
++#define RTC_EN_PWR_CYC_REQ		0x10c8
++#define RTC_EN_WARM_RST_REQ		0x10cc
++
++/*
++ * riscv registers its SBI SRST reboot notifier at priority 192
++ * (arch/riscv/kernel/sbi.c). Generic OpenSBI carries no reset device for this
++ * SoC, so that ecall always fails; outrank it rather than pay for it.
++ */
++#define RTCSYS_RESTART_PRIORITY		200
++
++static void cv1800_rtcsys_request(struct regmap *map, unsigned int en_reg,
++				  u32 req_bit)
++{
++	u32 val;
++
++	regmap_write(map, en_reg, 0x1);
++	regmap_write(map, RTC_CTRL0_UNLOCK, RTC_CTRL0_UNLOCK_KEY);
++	/* Read back so the unlock key has landed before RTC_CTRL0 is stored. */
++	regmap_read(map, RTC_CTRL0, &val);
++	regmap_write(map, RTC_CTRL0, RTC_CTRL0_MAGIC | req_bit);
++
++	/* The PoR state machine takes over from here. Do not return. */
++	mdelay(1000);
++}
 +
 +static int cv1800_rtcsys_restart(struct sys_off_data *data)
 +{
-+	struct regmap *map = data->cb_data;
++	cv1800_rtcsys_request(data->cb_data, RTC_EN_WARM_RST_REQ,
++			      RTC_CTRL0_REQ_WARM_RST);
 +
-+	regmap_write(map, RTC_EN_WARM_RST_REQ, 0x1);
-+	regmap_write(map, RTC_CTRL0_UNLOCK, RTC_CTRL0_UNLOCK_KEY);
-+	regmap_update_bits(map, RTC_CTRL0, RTC_CTRL0_WARM_RESET,
-+			   RTC_CTRL0_WARM_RESET);
++	return NOTIFY_DONE;
++}
 +
-+	mdelay(1000);
++static int cv1800_rtcsys_poweroff(struct sys_off_data *data)
++{
++	cv1800_rtcsys_request(data->cb_data, RTC_EN_SHDN_REQ,
++			      RTC_CTRL0_REQ_SHDN);
++
 +	return NOTIFY_DONE;
 +}
  
  static struct resource cv1800_rtcsys_irq_resources[] = {
  	DEFINE_RES_IRQ_NAMED(0, "alarm"),
-@@ -29,7 +53,8 @@ static const struct mfd_cell cv1800_rtcsys_subdev[] = {
+@@ -29,7 +99,9 @@
  
  static int cv1800_rtcsys_probe(struct platform_device *pdev)
  {
 -	int irq;
++	struct device *dev = &pdev->dev;
 +	struct regmap *map;
 +	int irq, ret;
  
  	irq = platform_get_irq_byname(pdev, "alarm");
  	if (irq < 0)
-@@ -37,10 +62,19 @@ static int cv1800_rtcsys_probe(struct platform_device *pdev)
+@@ -37,10 +109,34 @@
  	cv1800_rtcsys_irq_resources[0].start = irq;
  	cv1800_rtcsys_irq_resources[0].end = irq;
  
@@ -70,19 +134,34 @@ index fdae2e2a61c5..fb27d9221100 100644
 -				    cv1800_rtcsys_subdev,
 -				    ARRAY_SIZE(cv1800_rtcsys_subdev),
 -				    NULL, 0, NULL);
-+	ret = devm_mfd_add_devices(&pdev->dev, PLATFORM_DEVID_AUTO,
++	ret = devm_mfd_add_devices(dev, PLATFORM_DEVID_AUTO,
 +				   cv1800_rtcsys_subdev,
 +				   ARRAY_SIZE(cv1800_rtcsys_subdev),
 +				   NULL, 0, NULL);
 +	if (ret)
 +		return ret;
 +
-+	map = device_node_to_regmap(pdev->dev.of_node);
-+	if (!IS_ERR(map))
-+		devm_register_sys_off_handler(&pdev->dev, SYS_OFF_MODE_RESTART,
-+					      200, cv1800_rtcsys_restart, map);
++	/* The DT node also carries "syscon", so this hands back the PoR bank. */
++	map = device_node_to_regmap(dev->of_node);
++	if (IS_ERR(map)) {
++		/* Keep the RTC working; only reset/poweroff are lost. */
++		dev_warn(dev, "no syscon regmap, reset and poweroff unavailable\n");
++		return 0;
++	}
 +
-+	return 0;
++	ret = devm_register_sys_off_handler(dev, SYS_OFF_MODE_RESTART,
++					    RTCSYS_RESTART_PRIORITY,
++					    cv1800_rtcsys_restart, map);
++	if (ret)
++		return ret;
++
++	/*
++	 * SBI SRST also claims poweroff, at SYS_OFF_PRIO_FIRMWARE. It fails and
++	 * returns NOTIFY_DONE, so a lower-priority handler still gets its turn.
++	 */
++	return devm_register_sys_off_handler(dev, SYS_OFF_MODE_POWER_OFF,
++					     SYS_OFF_PRIO_HIGH,
++					     cv1800_rtcsys_poweroff, map);
  }
  
  static const struct of_device_id cv1800_rtcsys_of_match[] = {

@@ -1,0 +1,20 @@
+# Build the NanoKVM USB device gadget when the UDC appears (replaces the
+# rc5.d/S07nanokvm-usbdev runlevel symlink).
+#
+# dwc2 is built into the kernel, so the udc "add" uevent fires during kernel
+# init — long before userspace. udev therefore never sees it live; it sees the
+# replay that `udevadm trigger` performs when udevd starts (rcS S04udev). By
+# then mountall.sh (rcS S03) has mounted /boot and configfs from /etc/fstab,
+# which is exactly what the script needs. That ordering is load-bearing: see
+# the base-files bbappend.
+#
+# %k is the kernel name of the udc device ("4340000.usb" on this SoC). It is
+# passed through the event environment rather than as an argv word so the
+# script keeps its init.d-compatible "start"/"stop" interface — the NanoKVM
+# server calls the same file directly (server/service/vm/virtual-device.go).
+#
+# The gadget build is a few dozen sysfs writes with no sleeps on the happy path,
+# well inside udev_event_timeout. Do not add blocking work to the `start` path.
+ACTION=="add", SUBSYSTEM=="udc", \
+  ENV{NANOKVM_UDC}="%k", \
+  RUN+="/etc/init.d/S03usbdev start"

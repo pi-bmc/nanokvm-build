@@ -40,6 +40,14 @@ SRCREV = "ece349ade2973e220f524ce59e59711cc919263f"
 
 DEPENDS += "bc-native dtc-native"
 
+# Keep the version string reproducible: "2026.07", never "2026.07-g<sha>" or a
+# bare "2026.07+". LOCALVERSION= (set, empty) stops scripts/setlocalversion from
+# appending "+" for a non-tagged tree. LOCALVERSION_AUTO=n is passed for parity
+# with the kernel, but on its own it is inert -- setlocalversion greps
+# CONFIG_LOCALVERSION_AUTO out of auto.conf, so the symbol is also turned off in
+# do_configure:append below.
+EXTRA_OEMAKE += 'LOCALVERSION_AUTO=n LOCALVERSION='
+
 do_configure:append() {
     # mkeficapsule: U-Boot 2026.07 links its host tool against gnutls PKCS#11
     # (gnutls_pkcs11_*), which oe-core's gnutls-native lacks (no p11-kit), so it
@@ -52,6 +60,10 @@ do_configure:append() {
     # the internal EPHY stays in shutdown (EPHY_CTL=0x901) and Linux can't attach
     # the PHY. It defaults y on RISC-V (milkv_duo relies on that); re-enable it.
     "${S}/scripts/config" --file "${B}/.config" --enable BOARD_INIT
+
+    # LOCALVERSION_AUTO defaults to y and makes setlocalversion run git describe
+    # against ${S}, tainting the version with the checkout's SHA.
+    "${S}/scripts/config" --file "${B}/.config" --disable LOCALVERSION_AUTO
 
     oe_runmake -C ${S} O=${B} olddefconfig
 }
