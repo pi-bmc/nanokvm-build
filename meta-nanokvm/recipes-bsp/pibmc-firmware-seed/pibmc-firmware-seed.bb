@@ -9,9 +9,13 @@ from our locally-built U-Boot with no runtime network fetch."
 LICENSE = "MIT"
 LIC_FILES_CHKSUM = "file://${COMMON_LICENSE_DIR}/MIT;md5=0835ade698e0bcf8506ecda2f7b4f302"
 
-# Pure data carrier: no sources, no compilation, and machine-independent (the
+# Pure data carrier: no compilation of our own, and machine-independent (the
 # payload is an opaque disk image). allarch keeps it out of the riscv tune.
+# xz-native supplies `xz` to decompress the Pi image, which the pi-bmc machine
+# conf emits as .wic.xz; we recompress it to gzip so busybox `zcat` on the
+# target (no `unxz`) can expand the seed on first boot.
 inherit allarch
+DEPENDS = "xz-native"
 
 do_configure[noexec] = "1"
 do_compile[noexec] = "1"
@@ -29,16 +33,20 @@ do_install[mcdepends] = "mc::pi-bmc:pibmc-uboot-image:do_image_complete"
 do_install() {
     # Prefer the stable IMAGE_LINK_NAME symlink; fall back to the newest
     # timestamped file if the symlink naming ever changes.
-    src="${PIBMC_DEPLOY}/pibmc-uboot-image-pi-bmc-rpi64.rootfs.wic.gz"
+    src="${PIBMC_DEPLOY}/pibmc-uboot-image-pi-bmc-rpi64.rootfs.wic.xz"
     if [ ! -e "$src" ]; then
-        src=$(ls -t ${PIBMC_DEPLOY}/pibmc-uboot-image-pi-bmc-rpi64*.wic.gz 2>/dev/null | head -1)
+        src=$(ls -t ${PIBMC_DEPLOY}/pibmc-uboot-image-pi-bmc-rpi64*.wic.xz 2>/dev/null | head -1)
     fi
     if [ -z "$src" ] || [ ! -e "$src" ]; then
-        bbfatal "pibmc-firmware-seed: no Pi boot image (*.wic.gz) found in ${PIBMC_DEPLOY}."
+        bbfatal "pibmc-firmware-seed: no Pi boot image (*.wic.xz) found in ${PIBMC_DEPLOY}."
     fi
 
+    # Transcode xz -> gzip so the target's busybox zcat can expand it (busybox
+    # here has no unxz). The image is a mostly-empty 512M FAT, so the .gz stays
+    # small despite gzip being less dense than xz.
     install -d ${D}${datadir}/pibmc
-    install -m 0644 "$src" ${D}${datadir}/pibmc/uboot-rpi.img.gz
+    xz -dc "$src" | gzip -9 -c > ${D}${datadir}/pibmc/uboot-rpi.img.gz
+    chmod 0644 ${D}${datadir}/pibmc/uboot-rpi.img.gz
 }
 
 FILES:${PN} = "${datadir}/pibmc/uboot-rpi.img.gz"
