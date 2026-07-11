@@ -1,0 +1,7 @@
+# Boot-only GPT image for Raspberry Pi 4/5: a single FAT32 EFI System
+# Partition holding the Raspberry Pi firmware, U-Boot (as kernel8.img),
+# TF-A armstubs, DTBs and overlays. Mirrors the sfdisk layout used by
+# .github/workflows/u-boot-release.yaml (GPT, ESP starting at sector 2048).
+part /boot --source bootimg-partition --fstype=vfat --mkfs-extraopts "-F 32" --label EFI --part-name EFI --part-type C12A7328-F81F-11D2-BA4B-00A0C93EC93B --align 1024 --fixed-size 512M
+
+bootloader --ptable gpt
