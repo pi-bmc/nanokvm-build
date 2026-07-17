@@ -12,8 +12,8 @@
 #        iface usb0 inet static
 #            address 192.168.7.2 ... gateway 192.168.7.1
 #    udev-extraconf's autonet.rules runs `ifup usb0` the moment the gadget's
-#    rndis/ncm function registers the netdev (which happens at every boot --
-#    usb.rndis0 ships on the boot partition), and that stanza then installs
+#    ecm/ncm function registers the netdev (which happens at every boot --
+#    usb.ecm0 ships on the boot partition), and that stanza then installs
 #    `default via 192.168.7.1 dev usb0` on the BMC. Depending on how the race
 #    against eth0's DHCP resolves, the BMC's default route points into the
 #    point-to-point USB link and everything off-subnet (DNS, NTP, the gateway)
@@ -40,7 +40,7 @@ do_install:append() {
             -e '/^# Ethernet\/RNDIS gadget/,/^[[:space:]]*gateway 192\.168\.7\.1/d' \
             "${D}${sysconfdir}/network/interfaces"
         cat >>"${D}${sysconfdir}/network/interfaces" <<'EOF'
-# BMC <-> managed-host USB gadget NIC (rndis/ncm usb0), modeled on the Redfish
+# BMC <-> managed-host USB gadget NIC (ecm/ncm usb0), modeled on the Redfish
 # Host Interface (DSP0270) conventions: a point-to-point management link on
 # IPv4 link-local addressing. Deliberately no gateway -- the BMC's default
 # route must always stay on eth0 -- and the host is served a single DHCP lease

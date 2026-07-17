@@ -8,12 +8,12 @@
 # before userspace, so udev only sees it at the coldplug replay in S04 — by
 # which time these three mounts must already exist:
 #
-#   /boot               the rule's script reads /boot/usb.rndis0, usb.vid, ...
+#   /boot               the rule's script reads /boot/usb.ecm0, usb.vid, ...
 #   /sys/kernel/config  the gadget is assembled under configfs/usb_gadget
 #
 # S01fs used to mount them at rc5.d/S06, i.e. after S04udev. Leaving them there
 # would have made the gadget come up with none of its /boot/usb.* config
-# visible, silently dropping RNDIS and the VID/PID overrides.
+# visible, silently dropping the ECM NIC and the VID/PID overrides.
 #
 # base-files owns /etc/fstab, so append here rather than shipping a second
 # /etc/fstab from nanokvm-gadget (which would be an ipk file conflict).

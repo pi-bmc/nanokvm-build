@@ -1,0 +1,46 @@
+From: NanoKVM build <nbatkins@gmail.com>
+Date: Thu, 16 Jul 2026 00:00:00 +0000
+Subject: [PATCH] usb: dwc2: enable gadget buffer DMA on cv18xx/sg200x
+
+The upstream cv1800 params (63aa7ab955e7 "usb: dwc2: add support for
+Sophgo CV18XX/SG200X series SoC") force both host_dma and g_dma off with
+no stated rationale, leaving the gadget in interrupt-driven slave mode.
+
+On the SG2002 (NanoKVM), slave mode breaks f_mass_storage as a boot
+device for the managed host: enumeration and small bulk-IN payloads
+(READ_CAPACITY, 8 bytes) work, but the first full 512-byte bulk-IN data
+packet of a READ(10) is never transmitted. The host (RPi 5 EEPROM
+bootloader) times out after 10s, and its recovery read then receives the
+*previous* command's CSW -- the IN pipe runs one transfer behind and the
+BOT state machine never recovers (both LUNs dead until bus reset):
+
+    MSD READ_CAPACITY ... block-count 1050658 block-size 512
+    MSD cmd timeout xfer-state 2 req lba 0..0
+    CBW  55 53 42 43 08 00 00 00 ... 28 00 00 00 00 00 00 00 01 00
+    CSW  55 53 42 53 07 00 00 00 ...   <- tag 7 answering tag 8
+    MSD error 7
+
+The controller advertises internal DMA (GHWCFG2 arch = 2), and buffer
+DMA is what the cvitek vendor kernel always used on this core. Cache
+maintenance for non-coherent DMA demonstrably works on this kernel (SD
+via dw-mshc and stmmac ethernet both do DMA). Descriptor DMA stays off:
+dwc2_check_params() already rejects g_dma_desc on this core.
+
+host_dma is left off: the NanoKVM DTS pins dr_mode = "peripheral", so
+the host path never runs.
+
+Not upstream -- local to this build.
+---
+diff --git a/drivers/usb/dwc2/params.c b/drivers/usb/dwc2/params.c
+index 1111111..2222222 100644
+--- a/drivers/usb/dwc2/params.c
++++ b/drivers/usb/dwc2/params.c
+@@ -225,7 +225,7 @@ static void dwc2_set_cv1800_params(struct dwc2_hsotg *hsotg)
+ 	p->otg_caps.hnp_support = false;
+ 	p->otg_caps.srp_support = false;
+ 	p->host_dma = false;
+-	p->g_dma = false;
++	p->g_dma = true;
+ 	p->speed = DWC2_SPEED_PARAM_HIGH;
+ 	p->phy_type = DWC2_PHY_TYPE_PARAM_UTMI;
+ 	p->phy_utmi_width = 16;

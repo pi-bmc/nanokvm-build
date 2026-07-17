@@ -29,7 +29,7 @@ ensure_configfs() {
     [ -d /sys/kernel/config/usb_gadget ]
 }
 
-# MAC tail for the gadget NIC (ncm/rndis usb0). Left unset, the kernel
+# MAC tail for the gadget NIC (ncm/ecm usb0). Left unset, the kernel
 # randomises both ends of the link on every function creation, so the managed
 # host sees a brand-new network adapter each boot (fresh NetworkManager/dhcpcd
 # profile, neighbour churn). Reuse the NIC-specific tail of eth0's stable
@@ -173,14 +173,14 @@ start_usb_dev() {
         fi
         [ -L configs/c.1/ncm.usb0 ] || ln -s functions/ncm.usb0 configs/c.1/
     else
-        if [ -e /boot/usb.rndis0 ]; then
-            if [ ! -d functions/rndis.usb0 ]; then
-                mkdir -p functions/rndis.usb0
+        if [ -e /boot/usb.ecm0 ]; then
+            if [ ! -d functions/ecm.usb0 ]; then
+                mkdir -p functions/ecm.usb0
                 mac_tail=$(usb_net_mac_tail)
-                echo "02:$mac_tail" >functions/rndis.usb0/dev_addr
-                echo "06:$mac_tail" >functions/rndis.usb0/host_addr
+                echo "02:$mac_tail" >functions/ecm.usb0/dev_addr
+                echo "06:$mac_tail" >functions/ecm.usb0/host_addr
             fi
-            [ -L configs/c.1/rndis.usb0 ] || ln -s functions/rndis.usb0 configs/c.1/
+            [ -L configs/c.1/ecm.usb0 ] || ln -s functions/ecm.usb0 configs/c.1/
         fi
     fi
 

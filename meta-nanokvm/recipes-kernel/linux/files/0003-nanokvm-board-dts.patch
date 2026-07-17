@@ -6,7 +6,7 @@ NanoKVM board customisation, applied on top of the upstream USB backport
 (0001-apply-dts-usb-dev.patch):
 
   * USB: the upstream node defaults nano-b to dr_mode = "host", but the
-    NanoKVM BMC role needs the gadget stack (HID / mass-storage / RNDIS /
+    NanoKVM BMC role needs the gadget stack (HID / mass-storage / ECM /
     UVC to the managed machine), so switch it to "peripheral".
 
   * I2C1: enable i2c1@4010000 and repurpose two SDIO1 pads as its bus

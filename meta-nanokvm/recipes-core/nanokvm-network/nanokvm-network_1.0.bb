@@ -7,7 +7,7 @@ writes local-mac-address into the kernel device tree \
 that unconditionally and honours no override, so this hook exists solely to \
 let an operator pin a specific address. DHCP is handled by the stock ifupdown \
 'iface eth0 inet dhcp' stanza. (2) The Redfish-Host-Interface-style handling \
-of the USB gadget NIC (rndis/ncm usb0): if-up.d/if-post-down.d hooks that run \
+of the USB gadget NIC (ecm/ncm usb0): if-up.d/if-post-down.d hooks that run \
 a single-lease udhcpd for the managed host (no router/DNS options) and pin \
 the isolation knobs (no forwarding, no accept_ra, an nftables guard keeping \
 usb0 out of the forward path), paired with the gateway-less link-local stanza \

@@ -169,7 +169,7 @@ do_image_wic[depends] += "fsbl:do_deploy linux-sophgo:do_deploy"
 # Read at runtime from /boot by the USB gadget udev rule and the app.
 # extlinux.conf is the mainline U-Boot boot menu (bootmeth_extlinux scans
 # /extlinux/extlinux.conf).
-IMAGE_BOOT_FILES:append = " board hostname.prefix ver usb.keyboard usb.mouse usb.rndis0 extlinux.conf;extlinux/extlinux.conf"
+IMAGE_BOOT_FILES:append = " board hostname.prefix ver usb.keyboard usb.mouse usb.ecm0 extlinux.conf;extlinux/extlinux.conf"
 do_image_wic[depends] += "nanokvm-gadget:do_deploy"
 
 # --- Publish under the original LicheeRV-Nano-Build image name ---

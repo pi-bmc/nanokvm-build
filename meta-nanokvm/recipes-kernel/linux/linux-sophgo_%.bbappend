@@ -28,6 +28,7 @@ SRC_URI:append:sg2002-licheervnano = " \
     file://0002-riscv-dts-sophgo-add-cv1800b-usb2-phy.patch \
     file://0003-nanokvm-board-dts.patch \
     file://0005-nanokvm-cv1800-reboot.patch \
+    file://0006-usb-dwc2-cv1800-enable-gadget-dma.patch \
     file://nanokvm.cfg \
     "
 

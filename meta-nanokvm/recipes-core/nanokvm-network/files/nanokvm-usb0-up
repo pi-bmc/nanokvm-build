@@ -1,7 +1,7 @@
 #!/bin/sh
 # /etc/network/if-up.d/nanokvm-usb0
 #
-# ifupdown post-up hook for the USB gadget NIC (rndis/ncm usb0). The stanza in
+# ifupdown post-up hook for the USB gadget NIC (ecm/ncm usb0). The stanza in
 # /etc/network/interfaces gives the BMC 169.254.10.1/16 and no gateway; this
 # hook adds the rest of the Redfish-Host-Interface-style isolation:
 #
