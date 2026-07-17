@@ -39,11 +39,3 @@ dtoverlay=dwc2,dr_mode=host
 [pi5]
 usb_max_current_enable=1
 enable_uart=0
-# Restore CPU thermal monitoring; the Talos kernel's mainline bcm2712 DTB
-# omits the AVS monitor and thermal-zones nodes.
-dtoverlay=bcm2712-thermal
-# UEFI variable store EEPROM on the 40-pin header i2c bus (RP1 i2c1,
-# GPIO2/3). U-Boot persists BootOrder/Boot####/BootNext there
-# (CONFIG_EFI_VARIABLE_I2C_STORE); the BMC can read/rewrite them out-of-band.
-dtoverlay=uefi-eeprom
-# gpio=14=op,dh

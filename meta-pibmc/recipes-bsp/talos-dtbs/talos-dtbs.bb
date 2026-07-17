@@ -8,9 +8,13 @@ LIC_FILES_CHKSUM = "file://${COMMON_LICENSE_DIR}/GPL-2.0-only;md5=801f80980d171d
 TALOS_KERNEL_IMAGE ?= "ghcr.io/siderolabs/kernel"
 TALOS_KERNEL_TAG ?= "v1.13.0-36-g6b315f7"
 
-# Overlay merged into the Pi 5 base DTBs at build time (see do_compile). dtc and
+# Overlays merged into the Pi 5 base DTBs at build time (see do_compile). dtc and
 # fdtoverlay come from dtc-native.
-SRC_URI = "file://fixup-blconfig-overlay.dts"
+SRC_URI = " \
+    file://fixup-blconfig-overlay.dts \
+    file://uefi-eeprom-overlay.dts \
+    file://bcm2712-thermal-overlay.dts \
+"
 DEPENDS = "dtc-native"
 
 inherit deploy nopackages
@@ -43,24 +47,38 @@ do_compile() {
         bbfatal "No bcm2711* device tree files extracted from ${TALOS_KERNEL_IMAGE}:${TALOS_KERNEL_TAG}"
     fi
 
-    # Bake the bootloader-config / public-key NVRAM nodes (blconfig / blpubkey)
-    # into the Pi 5 base DTBs. The VPU firmware's blconfig fixup only populates a
-    # node already present in the DTB it loads, so applying this as a runtime
-    # .dtbo is too late (reg stays 0). Merging it here makes the node present
-    # before that fixup, exactly as on a stock DTB.
-    dtc -O dtb -@ -H epapr \
-        -o ${B}/fixup-blconfig.dtbo ${WORKDIR}/fixup-blconfig-overlay.dts
+    # Bake the RPi 5 device-tree overlays into the base DTBs at build time. They
+    # add nodes the stripped mainline Talos DTB omits:
+    #   fixup-blconfig  - bootloader-config / public-key NVRAM (blconfig/blpubkey).
+    #                     Must be present before the VPU firmware's fixup runs, so
+    #                     a runtime .dtbo is too late (reg stays 0).
+    #   uefi-eeprom     - RP1 i2c1 + UEFI-var-store EEPROM consumed by U-Boot.
+    #   bcm2712-thermal - AVS monitor + cpu-thermal zone for the thermal driver.
+    # Merging here (vs shipping runtime .dtbo's) makes them present before the
+    # firmware processes the DTB and avoids fragile firmware-time application.
+    # See each .dts header for details.
+    OVERLAYS="fixup-blconfig-overlay uefi-eeprom-overlay bcm2712-thermal-overlay"
+    dtbos=""
+    for ovl in ${OVERLAYS}; do
+        dtc -O dtb -@ -H epapr -o ${B}/${ovl}.dtbo ${WORKDIR}/${ovl}.dts
+        dtbos="${dtbos} ${B}/${ovl}.dtbo"
+    done
 
     if [ ! -f ${B}/dtbs/bcm2712-rpi-5-b.dtb ]; then
-        bbfatal "bcm2712-rpi-5-b.dtb not extracted from ${TALOS_KERNEL_IMAGE}:${TALOS_KERNEL_TAG}; cannot bake blconfig"
+        bbfatal "bcm2712-rpi-5-b.dtb not extracted from ${TALOS_KERNEL_IMAGE}:${TALOS_KERNEL_TAG}; cannot bake overlays"
     fi
 
-    for base in bcm2712-rpi-5-b bcm2712-d-rpi-5-b bcm2712-rpi-5-b-ovl-rp1; do
+    # bcm2712-rpi-5-b-ovl-rp1.dtb is deliberately excluded: it is the mainline
+    # split-RP1 variant whose /axi/pcie@1000120000 is empty (RP1 supplied by a
+    # separate overlay), so the uefi-eeprom target path is absent. The firmware
+    # never loads that variant - it loads bcm2712-rpi-5-b.dtb, plus bcm2712d0 /
+    # bcm2712-d-rpi-5-b.dtb on D0 silicon - both of which carry the full RP1 tree.
+    for base in bcm2712-rpi-5-b bcm2712-d-rpi-5-b; do
         dtb=${B}/dtbs/${base}.dtb
         [ -f "${dtb}" ] || continue
-        fdtoverlay -i "${dtb}" -o "${dtb}.new" ${B}/fixup-blconfig.dtbo
+        fdtoverlay -i "${dtb}" -o "${dtb}.new" ${dtbos}
         mv "${dtb}.new" "${dtb}"
-        bbnote "talos-dtbs: baked blconfig/blpubkey into ${base}.dtb"
+        bbnote "talos-dtbs: baked overlays (${OVERLAYS}) into ${base}.dtb"
     done
 }
 

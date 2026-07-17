@@ -1,8 +1,9 @@
 SUMMARY = "Device tree overlays built from the Raspberry Pi kernel tree"
 DESCRIPTION = "Applies the pi-bmc DTB patches to raspberrypi/linux, adds the \
-custom overlay sources (uefi-eeprom, smbios, bcm2712-thermal, ...) and builds \
-every overlay in arch/arm/boot/dts/overlays with cpp + dtc, exactly like the \
-build-kernel-dtbos job of the reference GitHub workflow."
+custom overlay sources (smbios, disable-v3d, enable-bt, ...) and builds every \
+overlay in arch/arm/boot/dts/overlays with cpp + dtc, exactly like the \
+build-kernel-dtbos job of the reference GitHub workflow. Overlays baked into \
+the Talos base DTBs (blconfig, uefi-eeprom, bcm2712-thermal) live in talos-dtbs."
 HOMEPAGE = "https://github.com/raspberrypi/linux"
 LICENSE = "GPL-2.0-only"
 LIC_FILES_CHKSUM = "file://COPYING;md5=6bc538ed5bd9a7fc9398086aedcd7e46"
