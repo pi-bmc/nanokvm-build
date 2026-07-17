@@ -15,10 +15,10 @@ index 82ad3035308..6327028f330 100644
  
 diff --git a/arch/arm/dts/bcm2712-rpi-5-b-u-boot.dtsi b/arch/arm/dts/bcm2712-rpi-5-b-u-boot.dtsi
 new file mode 100644
-index 00000000000..30ee0920f85
+index 00000000000..d10814ab510
 --- /dev/null
 +++ b/arch/arm/dts/bcm2712-rpi-5-b-u-boot.dtsi
-@@ -0,0 +1,213 @@
+@@ -0,0 +1,210 @@
 +/*
 + * PCIe DMA Override
 + *
@@ -146,12 +146,9 @@ index 00000000000..30ee0920f85
 + */
 +&rmem {
 +	blconfig: nvram@0 {
-+		compatible = "raspberrypi,bootloader-config", "nvmem-rmem";
-+		#address-cells = <1>;
-+		#size-cells = <1>;
-+		reg = <0x0 0x0 0x0>;
-+		no-map;
-+		status = "disabled";
++		bootph-all;
++	};
++	blpubkey: nvram@1 {
 +		bootph-all;
 +	};
 +};

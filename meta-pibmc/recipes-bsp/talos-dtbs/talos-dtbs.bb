@@ -8,6 +8,11 @@ LIC_FILES_CHKSUM = "file://${COMMON_LICENSE_DIR}/GPL-2.0-only;md5=801f80980d171d
 TALOS_KERNEL_IMAGE ?= "ghcr.io/siderolabs/kernel"
 TALOS_KERNEL_TAG ?= "v1.13.0-36-g6b315f7"
 
+# Overlay merged into the Pi 5 base DTBs at build time (see do_compile). dtc and
+# fdtoverlay come from dtc-native.
+SRC_URI = "file://fixup-blconfig-overlay.dts"
+DEPENDS = "dtc-native"
+
 inherit deploy nopackages
 
 COMPATIBLE_MACHINE = "pi-bmc-rpi64"
@@ -37,6 +42,26 @@ do_compile() {
     if [ -z "$(ls ${B}/dtbs/bcm2711*.dtb 2>/dev/null)" ]; then
         bbfatal "No bcm2711* device tree files extracted from ${TALOS_KERNEL_IMAGE}:${TALOS_KERNEL_TAG}"
     fi
+
+    # Bake the bootloader-config / public-key NVRAM nodes (blconfig / blpubkey)
+    # into the Pi 5 base DTBs. The VPU firmware's blconfig fixup only populates a
+    # node already present in the DTB it loads, so applying this as a runtime
+    # .dtbo is too late (reg stays 0). Merging it here makes the node present
+    # before that fixup, exactly as on a stock DTB.
+    dtc -O dtb -@ -H epapr \
+        -o ${B}/fixup-blconfig.dtbo ${WORKDIR}/fixup-blconfig-overlay.dts
+
+    if [ ! -f ${B}/dtbs/bcm2712-rpi-5-b.dtb ]; then
+        bbfatal "bcm2712-rpi-5-b.dtb not extracted from ${TALOS_KERNEL_IMAGE}:${TALOS_KERNEL_TAG}; cannot bake blconfig"
+    fi
+
+    for base in bcm2712-rpi-5-b bcm2712-d-rpi-5-b bcm2712-rpi-5-b-ovl-rp1; do
+        dtb=${B}/dtbs/${base}.dtb
+        [ -f "${dtb}" ] || continue
+        fdtoverlay -i "${dtb}" -o "${dtb}.new" ${B}/fixup-blconfig.dtbo
+        mv "${dtb}.new" "${dtb}"
+        bbnote "talos-dtbs: baked blconfig/blpubkey into ${base}.dtb"
+    done
 }
 
 do_deploy() {
