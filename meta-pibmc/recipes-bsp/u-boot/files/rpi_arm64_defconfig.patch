@@ -15,10 +15,10 @@ index 82ad3035308..6327028f330 100644
  
 diff --git a/arch/arm/dts/bcm2712-rpi-5-b-u-boot.dtsi b/arch/arm/dts/bcm2712-rpi-5-b-u-boot.dtsi
 new file mode 100644
-index 00000000000..ea5806c94c8
+index 00000000000..30ee0920f85
 --- /dev/null
 +++ b/arch/arm/dts/bcm2712-rpi-5-b-u-boot.dtsi
-@@ -0,0 +1,214 @@
+@@ -0,0 +1,213 @@
 +/*
 + * PCIe DMA Override
 + *
@@ -75,6 +75,35 @@ index 00000000000..ea5806c94c8
 + */
 +&pci_ep_bus {
 +	bootph-all;
++
++	rp1_i2c1: i2c@40074000 {
++		compatible = "snps,designware-i2c";
++		reg = <0x00 0x40074000  0x0 0x1000>;
++		#address-cells = <1>;
++		#size-cells = <0>;
++		clocks = <&rp1_clocks RP1_CLK_SYS>;
++		clock-frequency = <100000>;
++		pinctrl-names = "default";
++		pinctrl-0 = <&rp1_i2c1_pins>;
++		bootph-all;
++		status = "okay";
++
++		/*
++		 * One 24c256 shared by two consumers at different offsets:
++		 *   0x0000..0x3fff  UEFI variable store (blob at offset 0, capped
++		 *                    at CONFIG_ENV_OFFSET by efi_var_i2c.c)
++		 *   0x4000..0x7fff  U-Boot env (CONFIG_ENV_IS_IN_EEPROM,
++		 *                    SYS_I2C_EEPROM_ADDR=0x50, ENV_OFFSET=0x4000)
++		 * Real part or a BMC-emulated slave.  Env reaches it via the raw
++		 * i2c path but resolves to this same device (i2c_get_chip on 0x50),
++		 * so both use the driver-set 2-byte addressing.
++		 */
++		eeprom@50 {
++			compatible = "atmel,24c256";
++			reg = <0x50>;
++			pagesize = <64>;
++		};
++	};
 +};
 +
 +&rp1_clocks {
@@ -93,44 +122,6 @@ index 00000000000..ea5806c94c8
 +	bootph-all;
 +};
 +
-+/*
-+ * RP1 I2C1 - 40-pin header i2c bus (GPIO2/3, header pins 3/5) - and the
-+ * UEFI variable store EEPROM.
-+ *
-+ * The upstream rp1-common.dtsi carries no i2c nodes, so add the controller
-+ * here: a Designware I2C block at RP1 peripheral offset 0x74000, clocked
-+ * from clk_sys (200 MHz), matching the downstream rp1.dtsi.
-+ *
-+ * The 24c256 EEPROM at 0x50 holds the serialized non-volatile UEFI
-+ * variable blob (CONFIG_EFI_VARIABLE_I2C_STORE) at offset 0.  It may be a
-+ * real EEPROM or an I2C slave emulated by the BMC, which can then read and
-+ * modify BootOrder/BootNext out-of-band.
-+ */
-+&pci_ep_bus {
-+	rp1_i2c1: i2c@40074000 {
-+		compatible = "snps,designware-i2c";
-+		reg = <0x00 0x40074000  0x0 0x1000>;
-+		#address-cells = <1>;
-+		#size-cells = <0>;
-+		clocks = <&rp1_clocks RP1_CLK_SYS>;
-+		clock-frequency = <100000>;
-+		pinctrl-names = "default";
-+		pinctrl-0 = <&rp1_i2c1_pins>;
-+
-+		eeprom@50 {
-+			compatible = "atmel,24c256";
-+			reg = <0x50>;
-+			pagesize = <64>;
-+		};
-+	};
-+};
-+
-+/*
-+ * Pin group for RP1 I2C1: GPIO2/3 funcsel a3 = i2c1_sda/i2c1_scl (RP1
-+ * datasheet / Linux pinctrl-rp1.c).  Numeric pins/function values are
-+ * parsed by the rp1 pinctrl driver (drivers/gpio/rp1_gpio.c); the internal
-+ * pull-ups back up the on-board pull resistors on the header i2c pins.
-+ */
 +&rp1_gpio {
 +	rp1_i2c1_pins: i2c1-pins {
 +		pins = <2 3>;
@@ -138,6 +129,7 @@ index 00000000000..ea5806c94c8
 +		bias-pull-up;
 +	};
 +};
++
 +
 +/*
 + * Bootloader config (blconfig) NVMEM node.
@@ -196,6 +188,13 @@ index 00000000000..ea5806c94c8
 +	aliases {
 +		ethernet0 = &rp1_eth;
 +		blconfig = &blconfig;
++		/*
++		 * Env addresses the EEPROM on U-Boot i2c bus 0 (the eeprom_init()
++		 * default), so pin rp1_i2c1 to DM seq 0.  The DM bus number is
++		 * independent of the RP1 hardware instance ("i2c1") and the Linux
++		 * device name (/dev/i2c-1).
++		 */
++		i2c0 = &rp1_i2c1;
 +	};
 +
 +	smbios {
@@ -744,10 +743,10 @@ index 00000000000..d968bceb5d0
 +
 +#endif /* __RPI_BOOTSPI_H */
 diff --git a/board/raspberrypi/rpi/rpi.c b/board/raspberrypi/rpi/rpi.c
-index b0a1484c0fa..8283d1eee36 100644
+index b0a1484c0fa..01a5b67421f 100644
 --- a/board/raspberrypi/rpi/rpi.c
 +++ b/board/raspberrypi/rpi/rpi.c
-@@ -3,33 +3,44 @@
+@@ -3,33 +3,45 @@
   * (C) Copyright 2012-2016 Stephen Warren
   */
  
@@ -764,6 +763,7 @@ index b0a1484c0fa..8283d1eee36 100644
  #include <init.h>
  #include <memalign.h>
  #include <mmc.h>
++#include <pci.h>
  #include <asm/gpio.h>
 +#include <asm/io.h>
  #include <asm/arch/mbox.h>
@@ -793,7 +793,7 @@ index b0a1484c0fa..8283d1eee36 100644
  
  DECLARE_GLOBAL_DATA_PTR;
  
-@@ -94,14 +105,14 @@ struct efi_capsule_update_info update_info = {
+@@ -94,14 +106,14 @@ struct efi_capsule_update_info update_info = {
   */
  struct rpi_model {
  	const char *name;
@@ -811,7 +811,7 @@ index b0a1484c0fa..8283d1eee36 100644
  
  static const struct rpi_model rpi_model_unknown = {
  	"Unknown model",
-@@ -472,6 +483,72 @@ static void set_serial_number(void)
+@@ -472,6 +484,165 @@ static void set_serial_number(void)
  	env_set("serial#", serial_string);
  }
  
@@ -881,10 +881,103 @@ index b0a1484c0fa..8283d1eee36 100644
 +#endif
 +}
 +
++#if IS_ENABLED(CONFIG_BOARD_EARLY_INIT_R)
++#ifdef CONFIG_BCM2712
++/*
++ * Find the RP1 south bridge's node in the control DT.
++ *
++ * Both the mainline rp1-nexus.dtsi and the firmware DTBs spell the compatible
++ * with a short device ID ("pci1de4,1"), but the generated form is four digits,
++ * so accept either - the same pair pci_find_and_bind_driver() tries.
++ */
++static ofnode rpi5_find_rp1_node(void)
++{
++	static const char * const fmts[] = { "pci%04x,%x", "pci%04x,%04x" };
++	char compat[20];
++	ofnode node;
++	int i;
++
++	for (i = 0; i < ARRAY_SIZE(fmts); i++) {
++		snprintf(compat, sizeof(compat), fmts[i],
++			 PCI_VENDOR_ID_RPI, PCI_DEVICE_ID_RP1_C0);
++		node = ofnode_by_compatible(ofnode_null(), compat);
++		if (ofnode_valid(node))
++			return node;
++	}
++
++	return ofnode_null();
++}
++
++/*
++ * Bring up the PCIe host bridge in front of RP1, and only that one.
++ *
++ * The environment lives in an I2C EEPROM on RP1 i2c1, but RP1 is a PCIe
++ * endpoint: until its host bridge is enumerated nothing binds RP1, so
++ * rp1_bind() never scans the DT subtree and no UCLASS_I2C device exists.
++ * initr_env() runs long before anything else touches PCI (board_late_init's
++ * RP1 scan, then PREBOOT's "pci enum"), so env/eeprom.c finds no bus and
++ * U-Boot quietly falls back to the built-in default environment - taking
++ * serial#, and with it the SMBIOS system serial/UUID, along with it.
++ *
++ * Probing one UCLASS_PCI device enumerates and auto-configures its whole
++ * domain, which is all the I2C bus needs. The other controllers - notably the
++ * external PCIe slot, whose probe spends ~200ms training a link that is not
++ * there when no HAT is fitted - are left to board_late_init as before.
++ *
++ * RP1 itself is not probed here: the parent walk in the eventual i2c
++ * probe does that, so the BAR fixup in rp1_probe() still runs exactly once,
++ * after pci_auto_config_devices() has assigned the BARs.
++ *
++ * The bridge is found by walking up from RP1 rather than by path, so this
++ * follows the endpoint wherever the firmware DTB places it. If RP1 is not
++ * described behind a bridge there is nothing to enumerate; the EEPROM is
++ * unreachable either way and env falls back to its default as before.
++ */
++static void rpi5_pci_enum_rp1(void)
++{
++	struct udevice *bus;
++	ofnode node;
++
++#ifdef CONFIG_BOARD_TYPES
++	if (gd->board_type < RPI_BOARD_TYPE_RPI5_FAMILY_MIN ||
++	    gd->board_type > RPI_BOARD_TYPE_RPI5_FAMILY_MAX)
++		return;
++#endif
++
++	node = rpi5_find_rp1_node();
++	if (!ofnode_valid(node)) {
++		log_debug("no RP1 node in DT, leaving PCI to board_late_init\n");
++		return;
++	}
++
++	for (node = ofnode_get_parent(node); ofnode_valid(node);
++	     node = ofnode_get_parent(node)) {
++		if (!uclass_get_device_by_ofnode(UCLASS_PCI, node, &bus)) {
++			log_debug("enumerated %s for the RP1 i2c bus\n",
++				  bus->name);
++			return;
++		}
++	}
++
++	log_debug("RP1 has no PCI host bridge ancestor\n");
++}
++#else
++static inline void rpi5_pci_enum_rp1(void) { }
++#endif /* CONFIG_BCM2712 */
++
++int board_early_init_r(void)
++{
++	/* Must run before initr_env(): the environment is behind RP1's PCIe. */
++	rpi5_pci_enum_rp1();
++
++	return 0;
++}
++#endif /* CONFIG_BOARD_EARLY_INIT_R */
++
  int misc_init_r(void)
  {
  	set_fdt_addr();
-@@ -481,6 +558,7 @@ int misc_init_r(void)
+@@ -481,6 +652,7 @@ int misc_init_r(void)
  	set_board_info();
  #endif
  	set_serial_number();
@@ -892,7 +985,7 @@ index b0a1484c0fa..8283d1eee36 100644
  
  	return 0;
  }
-@@ -546,6 +624,10 @@ static void get_board_revision(void)
+@@ -546,6 +718,10 @@ static void get_board_revision(void)
  		model = &models[rev_type];
  	}
  
@@ -903,7 +996,7 @@ index b0a1484c0fa..8283d1eee36 100644
  	printf("RPI %s (0x%x)\n", model->name, revision);
  }
  
-@@ -591,7 +673,7 @@ int copy_property(void *dst, void *src, char *path, char *property)
+@@ -591,7 +767,7 @@ int copy_property(void *dst, void *src, char *path, char *property)
  }
  
  /* Copy tweaks from the firmware dtb to the loaded dtb */
@@ -912,7 +1005,7 @@ index b0a1484c0fa..8283d1eee36 100644
  {
  	/* Using dtb from firmware directly; leave it alone */
  	if (fdt == fw_fdt)
-@@ -628,13 +710,82 @@ void  update_fdt_from_fw(void *fdt, void *fw_fdt)
+@@ -628,13 +804,82 @@ void  update_fdt_from_fw(void *fdt, void *fw_fdt)
  	/* address of the PHY device as provided by the firmware  */
  	copy_property(fdt, fw_fdt, "ethernet0/mdio@e14/ethernet-phy@1", "reg");
  
@@ -996,7 +1089,7 @@ index b0a1484c0fa..8283d1eee36 100644
  int ft_board_setup(void *blob, struct bd_info *bd)
  {
  	int node;
-@@ -644,6 +795,10 @@ int ft_board_setup(void *blob, struct bd_info *bd)
+@@ -644,6 +889,10 @@ int ft_board_setup(void *blob, struct bd_info *bd)
  	else
  		update_fdt_from_fw(blob, (void *)gd->fdt_blob);
  
@@ -1007,7 +1100,7 @@ index b0a1484c0fa..8283d1eee36 100644
  	if (CONFIG_IS_ENABLED(FDT_SIMPLEFB)) {
  		node = fdt_node_offset_by_compatible(blob, -1, "simple-framebuffer");
  		if (node < 0)
-@@ -661,11 +816,324 @@ int ft_board_setup(void *blob, struct bd_info *bd)
+@@ -661,11 +910,324 @@ int ft_board_setup(void *blob, struct bd_info *bd)
  	return 0;
  }
  
@@ -1334,7 +1427,7 @@ index b0a1484c0fa..8283d1eee36 100644
  }
  
  static bool is_rpi3(void)
-@@ -681,39 +1149,47 @@ static int acpi_rpi_board_fill_ssdt(struct acpi_ctx *ctx)
+@@ -681,39 +1243,47 @@ static int acpi_rpi_board_fill_ssdt(struct acpi_ctx *ctx)
  	struct {
  		const char *fdt_compatible;
  		const char *acpi_scope;
@@ -1401,7 +1494,7 @@ index b0a1484c0fa..8283d1eee36 100644
  				if (ret) {
  					node = -FDT_ERR_NOTFOUND;
  					break;
-@@ -722,11 +1198,15 @@ static int acpi_rpi_board_fill_ssdt(struct acpi_ctx *ctx)
+@@ -722,11 +1292,15 @@ static int acpi_rpi_board_fill_ssdt(struct acpi_ctx *ctx)
  				if (r.start == map[i].mmio_address)
  					break;
  
@@ -1420,7 +1513,7 @@ index b0a1484c0fa..8283d1eee36 100644
  		}
  		acpigen_write_scope(ctx, map[i].acpi_scope);
  		acpigen_write_name_integer(ctx, "_STA", enabled ? 0xf : 0);
-@@ -734,34 +1214,38 @@ static int acpi_rpi_board_fill_ssdt(struct acpi_ctx *ctx)
+@@ -734,34 +1308,38 @@ static int acpi_rpi_board_fill_ssdt(struct acpi_ctx *ctx)
  	}
  
  	/* GPIO quirks */
@@ -1467,7 +1560,7 @@ index b0a1484c0fa..8283d1eee36 100644
  				acpigen_emit_namestring(ctx, "\\_SB.GDV1.DMTR");
  			acpigen_pop_len(ctx);
  		}
-@@ -771,15 +1255,13 @@ static int acpi_rpi_board_fill_ssdt(struct acpi_ctx *ctx)
+@@ -771,15 +1349,13 @@ static int acpi_rpi_board_fill_ssdt(struct acpi_ctx *ctx)
  	uart_in_use = ~0;
  	mini_clock_rate = 0x1000000;
  
@@ -1487,7 +1580,7 @@ index b0a1484c0fa..8283d1eee36 100644
  	if (!ret) {
  		if (uart_in_use == 0)
  			log_err("Invalid config: PL011 and MiniUART are both enabled.");
-@@ -802,7 +1284,8 @@ static int acpi_rpi_board_fill_ssdt(struct acpi_ctx *ctx)
+@@ -802,7 +1378,8 @@ static int acpi_rpi_board_fill_ssdt(struct acpi_ctx *ctx)
  	return 0;
  }
  
@@ -1498,7 +1591,7 @@ index b0a1484c0fa..8283d1eee36 100644
  	struct acpi_table_header *ssdt;
  	int ret;
 diff --git a/board/raspberrypi/rpi/rpi.env b/board/raspberrypi/rpi/rpi.env
-index 9ac9d6768ca..bc20eabdecd 100644
+index 9ac9d6768ca..1625d0a0b35 100644
 --- a/board/raspberrypi/rpi/rpi.env
 +++ b/board/raspberrypi/rpi/rpi.env
 @@ -77,4 +77,25 @@ pxefile_addr_r=0x05500000
@@ -1506,17 +1599,17 @@ index 9ac9d6768ca..bc20eabdecd 100644
  ramdisk_addr_r=0x05700000
  
 -boot_targets=mmc usb pxe dhcp
-+boot_targets=mmc usb nvme dhcp
-+
 +/*
-+ * Restrict standard boot to the EFI boot manager (efi_mgr) bootmeth only, so
-+ * every boot decision goes through UEFI Boot#### / BootOrder - which the BMC
-+ * manages in ubootefi.var - instead of the per-device distro/efi/pxe scanners.
-+ * The 'bootmeths' env has a U_BOOT_ENV_CALLBACK that applies the order when set,
-+ * so this takes effect from the default env and stays overridable at runtime.
++ * Pure UEFI boot: the autoboot menu's first entry - and therefore the
++ * timeout default - runs the full EFI boot manager, which honours BootNext
++ * and then walks BootOrder, both managed out-of-band by the BMC in the I2C
++ * variable store. The menu also lists every Boot#### option individually
++ * (selecting one sets a volatile BootNext) plus the eficonfig maintenance
++ * menu. 'bootcmd' runs the same command for non-menu paths ('boot' at the
++ * console).
 + */
-+bootmeths=efi_mgr
-+
++bootmenu_0=UEFI Boot Manager=bootefi bootmgr
++bootmenu_1=UEFI Maintenance Menu=eficonfig
 +/*
 + * Named TFTP boot entry for chainloading iPXE's SNP build (snp-arm64.efi).
 + * The UEFI boot manager cannot express a TFTP Boot#### option - its network
@@ -1948,6 +2041,48 @@ index 00000000000..4a8b4fe99d3
 +U_BOOT_DRVINFO(rpi_sysinfo) = {
 +	.name = "rpi_sysinfo",
 +};
+diff --git a/cmd/Kconfig b/cmd/Kconfig
+index 322ebe600c5..a09526539fb 100644
+--- a/cmd/Kconfig
++++ b/cmd/Kconfig
+@@ -2055,10 +2055,15 @@ config CMD_PCAP
+ config BOOTP_PXE
+ 	bool "Send PXE client arch to BOOTP/DHCP server"
+ 	default y
+-	depends on CMD_BOOTP && CMD_PXE
++	depends on CMD_BOOTP
+ 	help
+ 	  Supported for ARM, ARM64, and x86 for now.
+ 
++	  This only controls the DHCP options sent (client architecture /
++	  vendor class identifier); it is useful without CMD_PXE, e.g. for
++	  EFI_NET_PXE_BOOT where the bootfile is run as an EFI application
++	  instead of being parsed as a pxelinux config.
++
+ config DHCP_PXE_CLIENTARCH
+ 	hex "DCHCP client system architecture type"
+ 	depends on BOOTP_PXE || CMD_DHCP6
+diff --git a/cmd/eeprom.c b/cmd/eeprom.c
+index cf89cfce3e4..8bb8db2fec0 100644
+--- a/cmd/eeprom.c
++++ b/cmd/eeprom.c
+@@ -49,7 +49,15 @@ void eeprom_init(int bus)
+ {
+ 	/* I2C EEPROM */
+ #if CONFIG_IS_ENABLED(DM_I2C)
+-	eeprom_i2c_bus = bus;
++	/*
++	 * A negative bus means "keep the current/default bus", matching the
++	 * SYS_I2C_LEGACY branch below. env/eeprom.c calls eeprom_init(-1), so
++	 * without this guard the DM bus number would be set to -1 and
++	 * uclass_get_device_by_seq(UCLASS_I2C, -1) always fails with -ENODEV,
++	 * breaking CONFIG_ENV_IS_IN_EEPROM on DM_I2C platforms.
++	 */
++	if (bus >= 0)
++		eeprom_i2c_bus = bus;
+ #elif CONFIG_IS_ENABLED(SYS_I2C_LEGACY)
+ 	if (bus >= 0)
+ 		i2c_set_bus_num(bus);
 diff --git a/cmd/efidebug.c b/cmd/efidebug.c
 index 109496d9e95..cb86b3efa9e 100644
 --- a/cmd/efidebug.c
@@ -2132,28 +2267,40 @@ index ac331f1c1b0..fe1b5b6bf64 100644
  			iface->desc.bInterfaceSubClass > US_SC_MAX) {
  		debug("Not mass storage\n");
 diff --git a/configs/rpi_arm64_defconfig b/configs/rpi_arm64_defconfig
-index 69e8e72c5d7..c77fedf57cf 100644
+index 69e8e72c5d7..479304f879b 100644
 --- a/configs/rpi_arm64_defconfig
 +++ b/configs/rpi_arm64_defconfig
-@@ -4,7 +4,7 @@ CONFIG_ARCH_BCM283X=y
+@@ -3,36 +3,99 @@ CONFIG_POSITION_INDEPENDENT=y
+ CONFIG_ARCH_BCM283X=y
  CONFIG_TARGET_RPI_ARM64=y
  CONFIG_NR_DRAM_BANKS=8
- CONFIG_ENV_SIZE=0x4000
+-CONFIG_ENV_SIZE=0x4000
 -CONFIG_DEFAULT_DEVICE_TREE="bcm2711-rpi-4-b"
++CONFIG_ENV_SIZE=0x2000
 +CONFIG_DEFAULT_DEVICE_TREE="broadcom/bcm2711-rpi-4-b"
  CONFIG_OF_LIBFDT_OVERLAY=y
  CONFIG_DM_RESET=y
  CONFIG_SYS_LOAD_ADDR=0x1000000
-@@ -15,24 +15,43 @@ CONFIG_BOOTSTD_DEFAULTS=y
+ CONFIG_PCI=y
+ CONFIG_EFI_RUNTIME_UPDATE_CAPSULE=y
+ CONFIG_EFI_CAPSULE_FIRMWARE_RAW=y
+-CONFIG_BOOTSTD_DEFAULTS=y
  CONFIG_OF_BOARD_SETUP=y
  CONFIG_FDT_SIMPLEFB=y
  CONFIG_USE_PREBOOT=y
 -CONFIG_PREBOOT="pci enum; usb start;"
-+CONFIG_PREBOOT="pci enum; nvme scan; usb start; if load usb :auto ${scriptaddr} persistent.env; then env import -t ${scriptaddr} ${filesize}; fi; if load usb :auto ${scriptaddr} once.env; then env import -t ${scriptaddr} ${filesize}; fatrm usb :auto once.env; fi; env export -t ${scriptaddr}; fatwrite usb :auto ${scriptaddr} machine.env ${filesize}; if test -n \"${pieeprom_addr}\"; then fatwrite usb :auto ${pieeprom_addr} pieeprom.bin ${pieeprom_size}; fi; if load usb :auto ${scriptaddr} recovery.000; then fatrm usb :auto recovery.000; fatrm usb :auto pieeprom.upd; fatrm usb :auto pieeprom.sig; fi"
++CONFIG_PREBOOT="pci enum; nvme scan; usb start; if test -n \"${pieeprom_addr}\"; then fatwrite usb :auto ${pieeprom_addr} pieeprom.bin ${pieeprom_size}; fi; if load usb :auto ${scriptaddr} recovery.000; then fatrm usb :auto recovery.000; fatrm usb :auto pieeprom.upd; fatrm usb :auto pieeprom.sig; fi"
  CONFIG_SYS_PBSIZE=1049
  # CONFIG_DISPLAY_CPUINFO is not set
  # CONFIG_DISPLAY_BOARDINFO is not set
++# board_early_init_r() enumerates the PCIe host bridge in front of the RP1
++# south bridge, which has to happen before initr_env() reads the environment
++# out of the i2c EEPROM behind it (see rpi5_pci_enum_rp1() in rpi.c). Only
++# that one bridge is brought up; PREBOOT's "pci enum" still does the rest.
++CONFIG_BOARD_EARLY_INIT_R=y
  CONFIG_MISC_INIT_R=y
++# hush shell: PREBOOT and env scripts use if/then and && syntax
++CONFIG_HUSH_PARSER=y
  CONFIG_SYS_PROMPT="U-Boot> "
  CONFIG_CMD_NVEDIT_EFI=y
 +CONFIG_CMD_NVEDIT_LOAD=y
@@ -2161,13 +2308,51 @@ index 69e8e72c5d7..c77fedf57cf 100644
  CONFIG_CMD_MMC=y
  CONFIG_CMD_PCI=y
  CONFIG_CMD_USB=y
++# Previously selected via BOOTSTD_DEFAULTS/BOOT_DEFAULTS; PREBOOT and boot_snp
++# depend on these (load/fatwrite/fatrm on USB, dhcp), so keep them explicit.
++CONFIG_CMD_PART=y
++CONFIG_CMD_DHCP=y
++CONFIG_CMD_PING=y
++CONFIG_CMD_FAT=y
++CONFIG_CMD_FS_GENERIC=y
++# GPT (ESP discovery) and ISO9660 (HTTP-booted ISOs via blkmap) partitions
++CONFIG_EFI_PARTITION=y
++CONFIG_ISO_PARTITION=y
  CONFIG_CMD_EFIDEBUG=y
  CONFIG_CMD_FS_UUID=y
 -CONFIG_ENV_FAT_DEVICE_AND_PART="0:1"
 +CONFIG_CMD_IMPORTENV=y
 +CONFIG_CMD_EXPORTENV=y
 +CONFIG_ENV_OVERWRITE=y
-+CONFIG_ENV_IS_NOWHERE=y
++# Three stores share one 24c256 EEPROM at 0x50 on the RP1 i2c1 bus (GPIO2/3),
++# split by offset:
++#   0x0000..0x3fff  UEFI variable blob (CONFIG_EFI_VARIABLE_I2C_STORE, written
++#                   at offset 0; efi_var_i2c.c caps it at CONFIG_ENV_OFFSET so
++#                   it can never grow into the env region)
++#   0x4000..0x5fff  U-Boot environment (CONFIG_ENV_OFFSET, CONFIG_ENV_SIZE)
++#   0x6000..0x67ff  SMBIOS tables      (CONFIG_SMBIOS_I2C_STORE_OFFSET/_SIZE)
++#   0x6800..0x7fff  spare
++# The env is fixed-size, so it can never creep into the SMBIOS region above it.
++# The BMC - or the OS via fw_setenv - can read/rewrite these out-of-band;
++# serial# in the env feeds the SMBIOS system serial (lib/smbios.c reads
++# env_get("serial#")). Env falls back to the built-in default when the chip
++# does not ACK (e.g. the BMC has not populated it yet), so this cannot block
++# boot. CMD_EEPROM is enabled because SYS_I2C_EEPROM_ADDR_LEN is only
++# configurable when it (or ID_EEPROM) is set; it also gives the 'eeprom'
++# command for out-of-band debugging.
++CONFIG_ENV_IS_IN_EEPROM=y
++# Import the EEPROM env on top of the built-in defaults rather than replacing
++# them. The BMC writes this store out-of-band knowing only the variables it
++# manages, so a plain import would drop bootcmd, preboot and the load-address
++# defaults, leaving the board unbootable. Trade-off: a variable in the default
++# env can no longer be deleted (it is re-seeded each boot) - set it empty.
++CONFIG_ENV_EEPROM_KEEP_DEFAULTS=y
++CONFIG_ENV_OFFSET=0x4000
++CONFIG_CMD_EEPROM=y
++CONFIG_SYS_I2C_EEPROM_ADDR=0x50
++CONFIG_SYS_I2C_EEPROM_ADDR_LEN=2
++CONFIG_SYS_EEPROM_SIZE=32768
++CONFIG_SYS_EEPROM_PAGE_WRITE_BITS=6
 +CONFIG_ENV_VARS_UBOOT_CONFIG=y
 +CONFIG_VERSION_VARIABLE=y
  CONFIG_ENV_VARS_UBOOT_RUNTIME_CONFIG=y
@@ -2190,7 +2375,7 @@ index 69e8e72c5d7..c77fedf57cf 100644
  CONFIG_SYS_DFU_DATA_BUF_SIZE=0x100000
  CONFIG_SYS_DFU_MAX_FILE_SIZE=0x200000
  CONFIG_BCM2835_GPIO=y
-@@ -55,6 +74,7 @@ CONFIG_USB_XHCI_PCI=y
+@@ -55,6 +118,7 @@ CONFIG_USB_XHCI_PCI=y
  CONFIG_USB_DWC2=y
  CONFIG_USB_KEYBOARD=y
  CONFIG_USB_HOST_ETHER=y
@@ -2198,7 +2383,7 @@ index 69e8e72c5d7..c77fedf57cf 100644
  CONFIG_USB_ETHER_LAN78XX=y
  CONFIG_USB_ETHER_SMSC95XX=y
  CONFIG_VIDEO=y
-@@ -65,3 +85,79 @@ CONFIG_VIDEO_BCM2835=y
+@@ -65,3 +129,88 @@ CONFIG_VIDEO_BCM2835=y
  CONFIG_CONSOLE_SCROLL_LINES=10
  CONFIG_PHYS_TO_BUS=y
  # CONFIG_HEXDUMP is not set
@@ -2226,6 +2411,7 @@ index 69e8e72c5d7..c77fedf57cf 100644
 +CONFIG_CMD_NVME=y
 +CONFIG_NVME=y
 +# USB mass storage support
++CONFIG_USB_STORAGE=y
 +CONFIG_CMD_USB_MASS_STORAGE=y
 +CONFIG_USB_DWC3=y
 +CONFIG_USB_XHCI_DWC3=y
@@ -2233,16 +2419,25 @@ index 69e8e72c5d7..c77fedf57cf 100644
 +CONFIG_USB_ETHER=y
 +CONFIG_USB_ETH_CDC=y
 +CONFIG_BLKMAP=y
-+# Boot config
-+CONFIG_BOOTSTD=y
-+# Full UEFI boot support: removable-media (boot<arch>.efi) and boot-manager paths
-+CONFIG_BOOTMETH_EFILOADER=y
-+CONFIG_BOOTMETH_EFI_BOOTMGR=y
-+CONFIG_PXE_UTILS=n
++# Boot config - pure UEFI. Standard boot (bootstd) is disabled: bootcmd runs
++# the EFI boot manager directly, so every boot decision flows through the
++# BMC-managed BootNext/BootOrder/Boot#### variables in the I2C var store.
++# Removable-media Boot#### entries (\EFI\BOOT\BOOTAA64.EFI per block device)
++# are auto-generated by efi_disk/efi_setup, covering the old efiloader path.
++# CONFIG_BOOTSTD is not set
++CONFIG_USE_BOOTCOMMAND=y
++CONFIG_BOOTCOMMAND="bootefi bootmgr"
 +# EFI boot manager + menu-driven UEFI variable/boot-option maintenance (eficonfig)
 +CONFIG_EFI_BOOTMGR=y
 +CONFIG_CMD_BOOTEFI_BOOTMGR=y
 +CONFIG_CMD_EFICONFIG=y
++# Autoboot shows the bootmenu instead of the "Hit any key" prompt: UEFI Boot####
++# entries plus the eficonfig maintenance menu; a pending BootNext boots straight
++# away. On timeout entry 0 runs - bootmenu_0 in rpi.env, the full EFI bootmgr.
++CONFIG_CMD_BOOTMENU=y
++CONFIG_AUTOBOOT_KEYED=y
++CONFIG_BOOTDELAY=3
++CONFIG_AUTOBOOT_MENU_SHOW=y
 +# UEFI HTTP Boot: lets the EFI boot manager load a Boot#### URI option over HTTP
 +# (efidebug boot add -u <id> <label> http://host/file.efi). Selects CMD_WGET /
 +# CMD_DNS / BLKMAP. Note: with the legacy net stack, wget accepts http:// only
@@ -2253,14 +2448,6 @@ index 69e8e72c5d7..c77fedf57cf 100644
 +# a UEFI PXE client, arch 0xB) and TFTPs the server-provided bootfile - orderable
 +# in BootOrder/BootNext by the BMC alongside disk and http:// entries.
 +CONFIG_EFI_NET_PXE_BOOT=y
-+# Expo Menu
-+CONFIG_BOOTSTD_FULL=y
-+CONFIG_BOOTSTD_BOOTCOMMAND=y
-+# CONFIG_EXPO=y
-+# CONFIG_BOOTSTD_MENU=y
-+# CONFIG_CMD_BOOTMENU=y
-+# CONFIG_CMD_BOOTFLOW_FULL=y
-+# CONFIG_AUTOBOOT_MENU_SHOW=y
 +# PXE
 +CONFIG_DHCP_PXE_CLIENTARCH=0xb
 +CONFIG_BOOTP_VCI_STRING="PXEClient"
@@ -2277,6 +2464,13 @@ index 69e8e72c5d7..c77fedf57cf 100644
 +CONFIG_GENERATE_SMBIOS_TABLE=y
 +CONFIG_GENERATE_SMBIOS_TABLE_VERBOSE=y
 +CONFIG_CMD_SMBIOS=y
++# Mirror the generated SMBIOS tables into the EEPROM at 0x6000 so the BMC can
++# report host inventory (product, version, serial, UUID, CPU, cache) over
++# Redfish/IPMI while the host is off - the type 1 UUID exists nowhere else.
++# ~551 bytes in practice; the write is skipped when the bytes are unchanged.
++CONFIG_SMBIOS_I2C_STORE=y
++CONFIG_SMBIOS_I2C_STORE_OFFSET=0x6000
++CONFIG_SMBIOS_I2C_STORE_SIZE=0x800
 +CONFIG_LOCALVERSION_AUTO=n
 diff --git a/drivers/clk/Kconfig b/drivers/clk/Kconfig
 index c88931c8ec4..4451a657386 100644
@@ -6548,6 +6742,53 @@ index 595839fac3c..63e7e5b1a25 100644
  	{ }
  };
  
+diff --git a/env/Kconfig b/env/Kconfig
+index b312f9b5324..f7a9974eb26 100644
+--- a/env/Kconfig
++++ b/env/Kconfig
+@@ -106,6 +106,25 @@ config ENV_IS_IN_EEPROM
+ 	  EEPROM which holds the environment, is reached over
+ 	  a pca9547 i2c mux with address 0x70, channel 3.
+ 
++config ENV_EEPROM_KEEP_DEFAULTS
++	bool "Keep built-in defaults absent from the EEPROM environment"
++	depends on ENV_IS_IN_EEPROM
++	help
++	  Import the stored environment on top of the built-in default
++	  environment instead of replacing it, so variables the EEPROM does
++	  not carry keep their default values.
++
++	  An environment written by saveenv always holds every variable, so
++	  the normal import loses nothing. Enable this when the EEPROM may
++	  also be written out-of-band - e.g. by a BMC that only knows the few
++	  variables it manages - where importing a partial store would
++	  otherwise drop bootcmd, preboot and the load-address defaults and
++	  leave the board unbootable.
++
++	  Note the trade-off: a variable that exists in the default
++	  environment can no longer be deleted, since it is re-seeded on every
++	  boot. Set it to an empty value instead.
++
+ config ENV_IS_IN_FAT
+ 	bool "Environment is in a FAT filesystem"
+ 	depends on !CHAIN_OF_TRUST
+diff --git a/env/eeprom.c b/env/eeprom.c
+index b290b1013e1..76e61cf20cc 100644
+--- a/env/eeprom.c
++++ b/env/eeprom.c
+@@ -127,6 +127,12 @@ static int env_eeprom_load(void)
+ 	eeprom_read(CONFIG_SYS_I2C_EEPROM_ADDR,
+ 		off, (uchar *)buf_env, CONFIG_ENV_SIZE);
+ 
++	if (IS_ENABLED(CONFIG_ENV_EEPROM_KEEP_DEFAULTS)) {
++		env_set_default_vars(0, NULL, 0);
++
++		return env_import(buf_env, 1, H_EXTERNAL | H_NOCLEAR);
++	}
++
+ 	return env_import(buf_env, 1, H_EXTERNAL);
+ }
+ 
 diff --git a/include/broadcom/bcm_board_types.h b/include/broadcom/bcm_board_types.h
 new file mode 100644
 index 00000000000..3508b40fa9c
@@ -6905,6 +7146,36 @@ index cfff275daba..6bc3abe4a93 100644
  #define PCI_VENDOR_ID_TEHUTI		0x1fc9
  #define PCI_DEVICE_ID_TEHUTI_3009	0x3009
  #define PCI_DEVICE_ID_TEHUTI_3010	0x3010
+diff --git a/include/smbios.h b/include/smbios.h
+index f2f7483bce5..becaffff2c5 100644
+--- a/include/smbios.h
++++ b/include/smbios.h
+@@ -383,4 +383,25 @@ int smbios_update_version_full(void *smbios_tab, const char *version);
+ void smbios_prepare_measurement(const struct smbios3_entry *entry,
+ 				struct smbios_header *header);
+ 
++/**
++ * smbios_store_i2c() - copy the generated SMBIOS tables to an I2C EEPROM
++ *
++ * Writes the blob at @addr (the _SM3_ entry point followed by the structure
++ * table) to CONFIG_SMBIOS_I2C_STORE_OFFSET of the first UCLASS_I2C_EEPROM
++ * device, so a BMC can read the host inventory out-of-band. The write is
++ * skipped when the EEPROM already holds identical bytes.
++ *
++ * @addr:	start address of the tables, i.e. gd_smbios_start()
++ * @len:	length of the tables in bytes
++ * Return:	0 on success (or when the store is disabled), -ve on error
++ */
++#if CONFIG_IS_ENABLED(SMBIOS_I2C_STORE)
++int smbios_store_i2c(ulong addr, size_t len);
++#else
++static inline int smbios_store_i2c(ulong addr, size_t len)
++{
++	return 0;
++}
++#endif
++
+ #endif /* _SMBIOS_H_ */
 diff --git a/include/usb.h b/include/usb.h
 index be37ed272e1..cf68e8c82c6 100644
 --- a/include/usb.h
@@ -6925,8 +7196,64 @@ index be37ed272e1..cf68e8c82c6 100644
  
  /* device request (setup) */
  struct devrequest {
+diff --git a/lib/Kconfig b/lib/Kconfig
+index 931d5206936..48c9610bdbf 100644
+--- a/lib/Kconfig
++++ b/lib/Kconfig
+@@ -1162,6 +1162,39 @@ config GENERATE_SMBIOS_TABLE_VERBOSE
+ 	help
+ 	  Provide verbose SMBIOS information.
+ 
++config SMBIOS_I2C_STORE
++	bool "Copy the generated SMBIOS tables into an I2C EEPROM"
++	depends on GENERATE_SMBIOS_TABLE && DM_I2C && I2C_EEPROM
++	help
++	  Write the SMBIOS entry point and structure table generated at boot to
++	  a region of the first UCLASS_I2C_EEPROM device, so a BMC can report
++	  host inventory (product, version, serial, UUID, CPU, cache) over
++	  Redfish/IPMI while the host is powered off. The tables carry strictly
++	  more than the environment does - the type 1 UUID exists nowhere else.
++
++	  The blob is self-describing: the _SM3_ anchor holds the table length,
++	  so standard SMBIOS tooling can parse it straight out of the EEPROM.
++	  The write is skipped when the EEPROM already holds identical bytes, so
++	  a normal boot only pays for one read.
++
++config SMBIOS_I2C_STORE_OFFSET
++	hex "Offset of the SMBIOS region within the EEPROM"
++	depends on SMBIOS_I2C_STORE
++	default 0x6000
++	help
++	  Byte offset of the SMBIOS region. It must not overlap the UEFI
++	  variable store (which starts at offset 0) or the environment
++	  (CONFIG_ENV_OFFSET for CONFIG_ENV_SIZE bytes).
++
++config SMBIOS_I2C_STORE_SIZE
++	hex "Size of the SMBIOS region within the EEPROM"
++	depends on SMBIOS_I2C_STORE
++	default 0x800
++	help
++	  Bytes reserved for the SMBIOS region. The tables run to a few hundred
++	  bytes in practice; a larger blob is rejected rather than written over
++	  whatever follows the region.
++
+ endmenu
+ 
+ config LIB_RATIONAL
+diff --git a/lib/Makefile b/lib/Makefile
+index 70667f3728c..bbf9921041b 100644
+--- a/lib/Makefile
++++ b/lib/Makefile
+@@ -41,6 +41,7 @@ obj-$(CONFIG_GZIP_COMPRESSED) += gzip.o
+ # With QEMU the SMBIOS tables come from there, not from U-Boot
+ ifndef CONFIG_QFW_SMBIOS
+ obj-$(CONFIG_GENERATE_SMBIOS_TABLE) += smbios.o
++obj-$(CONFIG_SMBIOS_I2C_STORE) += smbios_i2c.o
+ endif
+ 
+ obj-$(CONFIG_SMBIOS_PARSER) += smbios-parser.o
 diff --git a/lib/efi_loader/Kconfig b/lib/efi_loader/Kconfig
-index 13e44be1d06..f559b87d76b 100644
+index 13e44be1d06..2882de47240 100644
 --- a/lib/efi_loader/Kconfig
 +++ b/lib/efi_loader/Kconfig
 @@ -123,6 +123,43 @@ config EFI_VARIABLE_FILE_STORE
@@ -6973,6 +7300,15 @@ index 13e44be1d06..f559b87d76b 100644
  config EFI_MM_COMM_TEE
  	bool "UEFI variables storage service via the trusted world"
  	depends on OPTEE
+@@ -530,7 +567,7 @@ config EFI_ECPT
+ 
+ config EFI_EBBR_2_1_CONFORMANCE
+ 	bool "Add the EBBRv2.1 conformance entry to the ECPT table"
+-	depends on BOOTMETH_EFI_BOOTMGR
++	depends on EFI_BOOTMGR
+ 	depends on EFI_ECPT
+ 	depends on EFI_LOADER_HII
+ 	depends on EFI_RISCV_BOOT_PROTOCOL || !RISCV
 @@ -572,6 +609,20 @@ config EFI_HTTP_BOOT
  	help
  	  Enabling this option adds EFI HTTP Boot support. It allows to
@@ -7342,6 +7678,43 @@ index f06cf49e443..6f031b0ae8b 100644
  	if (IS_ENABLED(CONFIG_ACPI)) {
  		ret = efi_acpi_register();
  		if (ret != EFI_SUCCESS)
+diff --git a/lib/efi_loader/efi_smbios.c b/lib/efi_loader/efi_smbios.c
+index 8d2ef6deb51..ac8419a22a0 100644
+--- a/lib/efi_loader/efi_smbios.c
++++ b/lib/efi_loader/efi_smbios.c
+@@ -57,7 +57,7 @@ efi_status_t efi_smbios_register(void)
+ 
+ static int install_smbios_table(void)
+ {
+-	ulong addr;
++	ulong addr, end;
+ 	void *buf;
+ 
+ 	if (!IS_ENABLED(CONFIG_GENERATE_SMBIOS_TABLE) ||
+@@ -71,7 +71,8 @@ static int install_smbios_table(void)
+ 		return log_msg_ret("mem", -ENOMEM);
+ 
+ 	addr = map_to_sysmem(buf);
+-	if (!write_smbios_table(addr)) {
++	end = write_smbios_table(addr);
++	if (!end) {
+ 		log_err("Failed to write SMBIOS table\n");
+ 		return log_msg_ret("smbios", -EINVAL);
+ 	}
+@@ -80,6 +81,13 @@ static int install_smbios_table(void)
+ 	log_debug("SMBIOS tables written to %lx\n", addr);
+ 	gd->arch.smbios_start = addr;
+ 
++	/*
++	 * Mirror the tables into the I2C EEPROM (when configured) so a BMC can
++	 * read the host inventory out-of-band. Best-effort: a failure here must
++	 * not stop the EFI tables from being installed.
++	 */
++	smbios_store_i2c(addr, end - addr);
++
+ 	return 0;
+ }
+ EVENT_SPY_SIMPLE(EVT_LAST_STAGE_INIT, install_smbios_table);
 diff --git a/lib/efi_loader/efi_var_file.c b/lib/efi_loader/efi_var_file.c
 index f23a964a418..8eb2682ce70 100644
 --- a/lib/efi_loader/efi_var_file.c
@@ -7400,10 +7773,10 @@ index f23a964a418..8eb2682ce70 100644
 +#endif /* !CONFIG_EFI_VARIABLE_I2C_STORE */
 diff --git a/lib/efi_loader/efi_var_i2c.c b/lib/efi_loader/efi_var_i2c.c
 new file mode 100644
-index 00000000000..99a50461fb6
+index 00000000000..d768db32c3c
 --- /dev/null
 +++ b/lib/efi_loader/efi_var_i2c.c
-@@ -0,0 +1,142 @@
+@@ -0,0 +1,161 @@
 +// SPDX-License-Identifier: GPL-2.0+
 +/*
 + * I2C EEPROM interface for UEFI variables
@@ -7422,6 +7795,7 @@ index 00000000000..99a50461fb6
 +#include <dm.h>
 +#include <efi_loader.h>
 +#include <efi_variable.h>
++#include <i2c.h>
 +#include <i2c_eeprom.h>
 +#include <log.h>
 +#include <malloc.h>
@@ -7465,8 +7839,26 @@ index 00000000000..99a50461fb6
 +	once = false;
 +
 +	size = i2c_eeprom_size(dev);
++
++	/*
++	 * When the U-Boot environment shares this EEPROM (CONFIG_ENV_IS_IN_EEPROM
++	 * at the same i2c address), it occupies [CONFIG_ENV_OFFSET, end) while the
++	 * variable blob is written at offset 0.  Cap the usable size at
++	 * CONFIG_ENV_OFFSET so the two regions can never overlap - the store is
++	 * otherwise bounded only by the full chip size.
++	 */
++#if defined(CONFIG_ENV_IS_IN_EEPROM) && (CONFIG_ENV_OFFSET > 0)
++	{
++		struct dm_i2c_chip *chip = dev_get_parent_plat(dev);
++
++		if (chip && chip->chip_addr == CONFIG_SYS_I2C_EEPROM_ADDR &&
++		    (size <= 0 || size > CONFIG_ENV_OFFSET))
++			size = CONFIG_ENV_OFFSET;
++	}
++#endif
++
 +	if (size > 0 && len > size) {
-+		log_err("EFI variables (%llu bytes) exceed EEPROM size (%d bytes)\n",
++		log_err("EFI variables (%llu bytes) exceed store size (%d bytes)\n",
 +			(unsigned long long)len, size);
 +		ret = EFI_OUT_OF_RESOURCES;
 +		goto error;
@@ -7545,4 +7937,104 @@ index 00000000000..99a50461fb6
 +out:
 +	free(buf);
 +	return EFI_SUCCESS;
++}
+diff --git a/lib/smbios_i2c.c b/lib/smbios_i2c.c
+new file mode 100644
+index 00000000000..d877fd5ce95
+--- /dev/null
++++ b/lib/smbios_i2c.c
+@@ -0,0 +1,94 @@
++// SPDX-License-Identifier: GPL-2.0+
++/*
++ * Copy the generated SMBIOS tables into a region of an I2C EEPROM.
++ *
++ * The BMC reads the region out-of-band to report host inventory (product,
++ * version, serial, UUID, CPU, cache) over Redfish/IPMI while the host is off.
++ * It carries strictly more than the U-Boot environment does - the type 1 UUID
++ * in particular exists nowhere else.
++ *
++ * The blob written is exactly what write_smbios_table() produced: the _SM3_
++ * entry point followed by the structure table. It is self-describing (the
++ * anchor holds the table length), so standard SMBIOS tooling can parse it
++ * straight out of the EEPROM. Note the anchor's struct_table_address field is
++ * the DRAM address the tables were generated at and is meaningless to a
++ * reader of the EEPROM; the tables always begin at
++ * ALIGN(entry.length, 16) bytes into the region (see write_smbios_table()).
++ *
++ * This shares the EEPROM with the UEFI variable store and the environment:
++ *
++ *	0x0000..0x3fff  UEFI variable blob (CONFIG_EFI_VARIABLE_I2C_STORE)
++ *	0x4000..0x5fff  U-Boot environment (CONFIG_ENV_IS_IN_EEPROM)
++ *	0x6000..        SMBIOS tables      (CONFIG_SMBIOS_I2C_STORE_OFFSET)
++ */
++
++#define LOG_CATEGORY LOGC_BOARD
++
++#include <dm.h>
++#include <i2c_eeprom.h>
++#include <log.h>
++#include <malloc.h>
++#include <mapmem.h>
++#include <smbios.h>
++#include <linux/errno.h>
++
++int smbios_store_i2c(ulong addr, size_t len)
++{
++	struct udevice *dev;
++	void *tables;
++	u8 *stored;
++	int ret;
++
++	if (!len)
++		return 0;
++
++	if (len > CONFIG_SMBIOS_I2C_STORE_SIZE) {
++		log_err("SMBIOS tables (%zu bytes) exceed the EEPROM region (%d bytes)\n",
++			len, CONFIG_SMBIOS_I2C_STORE_SIZE);
++		return -ENOSPC;
++	}
++
++	/*
++	 * The same device as the UEFI variable store and the environment - one
++	 * EEPROM, three regions - so this must not be a separate DT node.
++	 */
++	ret = uclass_first_device_err(UCLASS_I2C_EEPROM, &dev);
++	if (ret) {
++		log_debug("No EEPROM for the SMBIOS tables: %d\n", ret);
++		return ret;
++	}
++
++	tables = map_sysmem(addr, len);
++
++	/*
++	 * Skip the write when the EEPROM already holds these exact bytes. The
++	 * tables only change across a U-Boot update or a serial#/DT change,
++	 * while i2c_eeprom_write() sleeps 10ms per page - so the common boot
++	 * costs one read instead of a pointless rewrite.
++	 */
++	stored = malloc(len);
++	if (stored) {
++		bool same = !i2c_eeprom_read(dev, CONFIG_SMBIOS_I2C_STORE_OFFSET,
++					     stored, len) &&
++			    !memcmp(stored, tables, len);
++
++		free(stored);
++		if (same) {
++			log_debug("SMBIOS tables in EEPROM are up to date\n");
++			unmap_sysmem(tables);
++			return 0;
++		}
++	}
++
++	ret = i2c_eeprom_write(dev, CONFIG_SMBIOS_I2C_STORE_OFFSET, tables, len);
++	unmap_sysmem(tables);
++	if (ret) {
++		log_err("Failed to write the SMBIOS tables to EEPROM: %d\n", ret);
++		return ret;
++	}
++
++	log_debug("SMBIOS: wrote %zu bytes at EEPROM offset %#x\n", len,
++		  (uint)CONFIG_SMBIOS_I2C_STORE_OFFSET);
++
++	return 0;
 +}
