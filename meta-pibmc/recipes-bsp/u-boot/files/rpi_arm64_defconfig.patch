@@ -740,10 +740,10 @@ index 00000000000..d968bceb5d0
 +
 +#endif /* __RPI_BOOTSPI_H */
 diff --git a/board/raspberrypi/rpi/rpi.c b/board/raspberrypi/rpi/rpi.c
-index b0a1484c0fa..01a5b67421f 100644
+index b0a1484c0fa..36e15fbf671 100644
 --- a/board/raspberrypi/rpi/rpi.c
 +++ b/board/raspberrypi/rpi/rpi.c
-@@ -3,33 +3,45 @@
+@@ -3,33 +3,47 @@
   * (C) Copyright 2012-2016 Stephen Warren
   */
  
@@ -753,8 +753,11 @@ index b0a1484c0fa..01a5b67421f 100644
  #include <config.h>
  #include <dm.h>
  #include <env.h>
++#include <event.h>
  #include <efi_loader.h>
++#include <efi_variable.h>
 +#include <fdtdec.h>
++#include <linux/string.h>
  #include <fdt_support.h>
  #include <fdt_simplefb.h>
  #include <init.h>
@@ -770,7 +773,6 @@ index b0a1484c0fa..01a5b67421f 100644
  #include <dm/platform_data/serial_bcm283x_mu.h>
 +#include <broadcom/bcm_board_types.h>
 +#ifdef CONFIG_BCM2712
-+#include "bootspi.h"
 +#endif
  #ifdef CONFIG_ARM64
  #include <asm/armv8/mmu.h>
@@ -790,7 +792,7 @@ index b0a1484c0fa..01a5b67421f 100644
  
  DECLARE_GLOBAL_DATA_PTR;
  
-@@ -94,14 +106,14 @@ struct efi_capsule_update_info update_info = {
+@@ -94,14 +108,14 @@ struct efi_capsule_update_info update_info = {
   */
  struct rpi_model {
  	const char *name;
@@ -808,7 +810,7 @@ index b0a1484c0fa..01a5b67421f 100644
  
  static const struct rpi_model rpi_model_unknown = {
  	"Unknown model",
-@@ -472,6 +484,165 @@ static void set_serial_number(void)
+@@ -472,6 +486,160 @@ static void set_serial_number(void)
  	env_set("serial#", serial_string);
  }
  
@@ -860,22 +862,17 @@ index b0a1484c0fa..01a5b67421f 100644
 +
 +static void set_blconfig_env(void)
 +{
-+	set_blconfig_env_from_fdt();
-+
-+#ifdef CONFIG_BCM2712
 +	/*
-+	 * Independently of whether the DT exposed blconfig, dump the full
-+	 * pieeprom image on Pi 5 family so preboot can fatwrite pieeprom.bin
-+	 * to USB for inspection / fleet diagnostics.
++	 * Publish blconfig_addr/blconfig_size from the firmware DT. On Pi 5
++	 * these locate the live EEPROM config that rpi_publish_bootloader_vars()
++	 * mirrors into the BootloaderConfig UEFI variable for the BMC.
++	 *
++	 * The full pieeprom.bin is no longer dumped here: the BMC reads the
++	 * config over I2C and owns the pieeprom image file lifecycle itself, so
++	 * the SPI read (rpi5_bootspi_export_pieeprom) that fed the old PREBOOT
++	 * fatwrite is gone — as is its ~2 s cost on every boot.
 +	 */
-+#ifdef CONFIG_BOARD_TYPES
-+	if (gd->board_type >= RPI_BOARD_TYPE_RPI5_FAMILY_MIN &&
-+	    gd->board_type <= RPI_BOARD_TYPE_RPI5_FAMILY_MAX)
-+		rpi5_bootspi_export_pieeprom();
-+#else
-+	rpi5_bootspi_export_pieeprom();
-+#endif
-+#endif
++	set_blconfig_env_from_fdt();
 +}
 +
 +#if IS_ENABLED(CONFIG_BOARD_EARLY_INIT_R)
@@ -974,7 +971,7 @@ index b0a1484c0fa..01a5b67421f 100644
  int misc_init_r(void)
  {
  	set_fdt_addr();
-@@ -481,6 +652,7 @@ int misc_init_r(void)
+@@ -481,6 +649,7 @@ int misc_init_r(void)
  	set_board_info();
  #endif
  	set_serial_number();
@@ -982,7 +979,7 @@ index b0a1484c0fa..01a5b67421f 100644
  
  	return 0;
  }
-@@ -546,6 +718,10 @@ static void get_board_revision(void)
+@@ -546,6 +715,10 @@ static void get_board_revision(void)
  		model = &models[rev_type];
  	}
  
@@ -993,7 +990,7 @@ index b0a1484c0fa..01a5b67421f 100644
  	printf("RPI %s (0x%x)\n", model->name, revision);
  }
  
-@@ -591,7 +767,7 @@ int copy_property(void *dst, void *src, char *path, char *property)
+@@ -591,7 +764,7 @@ int copy_property(void *dst, void *src, char *path, char *property)
  }
  
  /* Copy tweaks from the firmware dtb to the loaded dtb */
@@ -1002,7 +999,7 @@ index b0a1484c0fa..01a5b67421f 100644
  {
  	/* Using dtb from firmware directly; leave it alone */
  	if (fdt == fw_fdt)
-@@ -628,13 +804,82 @@ void  update_fdt_from_fw(void *fdt, void *fw_fdt)
+@@ -628,13 +801,82 @@ void  update_fdt_from_fw(void *fdt, void *fw_fdt)
  	/* address of the PHY device as provided by the firmware  */
  	copy_property(fdt, fw_fdt, "ethernet0/mdio@e14/ethernet-phy@1", "reg");
  
@@ -1086,7 +1083,7 @@ index b0a1484c0fa..01a5b67421f 100644
  int ft_board_setup(void *blob, struct bd_info *bd)
  {
  	int node;
-@@ -644,6 +889,10 @@ int ft_board_setup(void *blob, struct bd_info *bd)
+@@ -644,6 +886,10 @@ int ft_board_setup(void *blob, struct bd_info *bd)
  	else
  		update_fdt_from_fw(blob, (void *)gd->fdt_blob);
  
@@ -1097,7 +1094,7 @@ index b0a1484c0fa..01a5b67421f 100644
  	if (CONFIG_IS_ENABLED(FDT_SIMPLEFB)) {
  		node = fdt_node_offset_by_compatible(blob, -1, "simple-framebuffer");
  		if (node < 0)
-@@ -661,11 +910,324 @@ int ft_board_setup(void *blob, struct bd_info *bd)
+@@ -661,11 +907,447 @@ int ft_board_setup(void *blob, struct bd_info *bd)
  	return 0;
  }
  
@@ -1370,6 +1367,129 @@ index b0a1484c0fa..01a5b67421f 100644
 +}
 +#endif /* CONFIG_CYCLIC && CONFIG_DM_GPIO */
 +
++#if CONFIG_IS_ENABLED(EFI_LOADER)
++/*
++ * pi-bmc bootloader-provenance UEFI variables.
++ *
++ * The Pi 5 VPU firmware records where the running bootloader came from in the
++ * DT it hands us: the rpi-eeprom git hash at /chosen/bootloader/version, the
++ * flash time at /chosen/bootloader/update-timestamp, and the live EEPROM
++ * config in the blconfig nvmem region (located by set_blconfig_env_from_fdt()
++ * earlier in misc_init_r(), which published blconfig_addr/blconfig_size).
++ *
++ * Mirror those into the I2C UEFI variable store (CONFIG_EFI_VARIABLE_I2C_STORE)
++ * so the BMC can read the running bootloader's version and config out-of-band
++ * over I2C — without the 2 MiB pieeprom.bin. The vendor GUID and variable
++ * names below are mirrored by the BMC's efivars package.
++ *
++ * update-timestamp gates every write: the firmware only rewrites that node
++ * when the EEPROM is reflashed, so an unchanged timestamp means there is
++ * nothing to do. Skipping spares the EEPROM-backed variable store a rewrite
++ * on every boot. The BMC owns the pieeprom.bin file lifecycle itself.
++ */
++static const efi_guid_t rpi_bootloader_guid =
++	EFI_GUID(0xd1a0f2c4, 0x9b3e, 0x4f7a,
++		 0x8c, 0x21, 0x6e, 0x5b, 0x0a, 0x7d, 0x4f, 0x10);
++
++#define RPI_BL_VAR_ATTR (EFI_VARIABLE_NON_VOLATILE | \
++			 EFI_VARIABLE_BOOTSERVICE_ACCESS | \
++			 EFI_VARIABLE_RUNTIME_ACCESS)
++
++static void rpi_bl_set_var(const u16 *name, const void *data, efi_uintn_t len)
++{
++	efi_status_t ret;
++
++	ret = efi_set_variable_int(name, &rpi_bootloader_guid, RPI_BL_VAR_ATTR,
++				  len, data, false);
++	if (ret != EFI_SUCCESS)
++		log_warning("rpi: bootloader UEFI var write failed (0x%lx)\n",
++			    ret);
++}
++
++/*
++ * Publish the running bootloader's provenance as UEFI variables. Driven by the
++ * EVT_POST_PREBOOT event spy below — *after* preboot's "usb start" — not from a
++ * board init hook: efi_init_obj_list() probes block devices for the ESP, so
++ * running it before storage is up returns EFI_NOT_FOUND and (because that
++ * result is cached) breaks the later "bootefi bootmgr". A no-op when the
++ * firmware DT carries no /chosen/bootloader node.
++ *
++ * Work is gated on update-timestamp: an unchanged timestamp returns early, so
++ * a steady-state boot does not rewrite the EEPROM variable store. The BMC
++ * reads these variables over I2C and manages the pieeprom.bin file itself;
++ * U-Boot never writes the image.
++ */
++static void rpi_publish_bootloader_vars(void)
++{
++	void *fw_fdt = (void *)fw_dtb_pointer;
++	u32 update_ts = 0, saved_ts = 0;
++	efi_uintn_t size;
++	const char *ver;
++	ofnode node;
++	u32 attr;
++
++	if (!fw_fdt || fdt_magic(fw_fdt) != FDT_MAGIC)
++		return;
++
++	node = ofnode_path("/chosen/bootloader");
++	if (!ofnode_valid(node))
++		return;
++
++	/* Bring up the EFI subsystem (and its I2C variable store) on demand. */
++	if (efi_init_obj_list() != EFI_SUCCESS)
++		return;
++
++	if (ofnode_read_u32(node, "update-timestamp", &update_ts))
++		return;	/* No timestamp to gate on; leave the variables alone. */
++
++	size = sizeof(saved_ts);
++	if (efi_get_variable_int(u"BootloaderUpdateTimestamp",
++				 &rpi_bootloader_guid, &attr, &size,
++				 &saved_ts, NULL) == EFI_SUCCESS &&
++	    size == sizeof(saved_ts) && saved_ts == update_ts)
++		return;	/* EEPROM unchanged since the last boot: nothing to do. */
++
++	/* Changed, or first boot: refresh the variables from the DT. */
++	ver = ofnode_read_string(node, "version");
++	if (ver)
++		rpi_bl_set_var(u"BootloaderVersion", ver, strlen(ver) + 1);
++
++	{
++		ulong cfg_addr = env_get_hex("blconfig_addr", 0);
++		ulong cfg_size = env_get_hex("blconfig_size", 0);
++
++		if (cfg_addr && cfg_size)
++			rpi_bl_set_var(u"BootloaderConfig",
++				       (void *)cfg_addr, cfg_size);
++	}
++
++	/*
++	 * Advance the stored timestamp last, so the next unchanged boot returns
++	 * early above. The BMC reads BootloaderConfig/Version over I2C and owns
++	 * the pieeprom.bin file lifecycle itself — U-Boot does not write the
++	 * image, so this whole routine only touches the small variable store.
++	 */
++	rpi_bl_set_var(u"BootloaderUpdateTimestamp", &update_ts,
++		       sizeof(update_ts));
++}
++
++static int rpi_publish_bootloader_vars_spy(void)
++{
++	rpi_publish_bootloader_vars();
++	/* Best-effort: never fail the boot over an unpublished variable. */
++	return 0;
++}
++
++/*
++ * EVT_POST_PREBOOT fires right after the "preboot" command, so block devices
++ * that preboot brings up (usb start, nvme scan) are available. That is the
++ * earliest point efi_init_obj_list() — which probes storage for the ESP —
++ * succeeds; running it from any earlier init hook returns EFI_NOT_FOUND and
++ * caches the failure, breaking the subsequent "bootefi bootmgr".
++ */
++EVENT_SPY_SIMPLE(EVT_POST_PREBOOT, rpi_publish_bootloader_vars_spy);
++#endif /* EFI_LOADER */
++
 +int board_late_init(void)
 +{
 +	struct udevice *dev;
@@ -1424,7 +1544,7 @@ index b0a1484c0fa..01a5b67421f 100644
  }
  
  static bool is_rpi3(void)
-@@ -681,39 +1243,47 @@ static int acpi_rpi_board_fill_ssdt(struct acpi_ctx *ctx)
+@@ -681,39 +1363,47 @@ static int acpi_rpi_board_fill_ssdt(struct acpi_ctx *ctx)
  	struct {
  		const char *fdt_compatible;
  		const char *acpi_scope;
@@ -1491,7 +1611,7 @@ index b0a1484c0fa..01a5b67421f 100644
  				if (ret) {
  					node = -FDT_ERR_NOTFOUND;
  					break;
-@@ -722,11 +1292,15 @@ static int acpi_rpi_board_fill_ssdt(struct acpi_ctx *ctx)
+@@ -722,11 +1412,15 @@ static int acpi_rpi_board_fill_ssdt(struct acpi_ctx *ctx)
  				if (r.start == map[i].mmio_address)
  					break;
  
@@ -1510,7 +1630,7 @@ index b0a1484c0fa..01a5b67421f 100644
  		}
  		acpigen_write_scope(ctx, map[i].acpi_scope);
  		acpigen_write_name_integer(ctx, "_STA", enabled ? 0xf : 0);
-@@ -734,34 +1308,38 @@ static int acpi_rpi_board_fill_ssdt(struct acpi_ctx *ctx)
+@@ -734,34 +1428,38 @@ static int acpi_rpi_board_fill_ssdt(struct acpi_ctx *ctx)
  	}
  
  	/* GPIO quirks */
@@ -1557,7 +1677,7 @@ index b0a1484c0fa..01a5b67421f 100644
  				acpigen_emit_namestring(ctx, "\\_SB.GDV1.DMTR");
  			acpigen_pop_len(ctx);
  		}
-@@ -771,15 +1349,13 @@ static int acpi_rpi_board_fill_ssdt(struct acpi_ctx *ctx)
+@@ -771,15 +1469,13 @@ static int acpi_rpi_board_fill_ssdt(struct acpi_ctx *ctx)
  	uart_in_use = ~0;
  	mini_clock_rate = 0x1000000;
  
@@ -1577,7 +1697,7 @@ index b0a1484c0fa..01a5b67421f 100644
  	if (!ret) {
  		if (uart_in_use == 0)
  			log_err("Invalid config: PL011 and MiniUART are both enabled.");
-@@ -802,7 +1378,8 @@ static int acpi_rpi_board_fill_ssdt(struct acpi_ctx *ctx)
+@@ -802,7 +1498,8 @@ static int acpi_rpi_board_fill_ssdt(struct acpi_ctx *ctx)
  	return 0;
  }
  
@@ -2211,6 +2331,42 @@ index 109496d9e95..cb86b3efa9e 100644
  #endif
  	"  -s '<optional data>'\n"
  	"efidebug boot rm <bootid#1> [<bootid#2> [<bootid#3> [...]]]\n"
+diff --git a/common/event.c b/common/event.c
+index 8d7513eb10b..398e713d2f8 100644
+--- a/common/event.c
++++ b/common/event.c
+@@ -49,6 +49,9 @@ const char *const type_name[] = {
+ 	/* main loop events */
+ 	"main_loop",
+ 
++	/* post preboot events */
++	"post_preboot",
++
+ 	/* livetree has been built */
+ 	"of_live_init",
+ };
+diff --git a/common/main.c b/common/main.c
+index b0b6e74f5d3..4b4504557f6 100644
+--- a/common/main.c
++++ b/common/main.c
+@@ -19,6 +19,7 @@
+ #include <net.h>
+ #include <version_string.h>
+ #include <efi_loader.h>
++#include <event.h>
+ 
+ static void run_preboot_environment_command(void)
+ {
+@@ -53,6 +54,9 @@ void main_loop(void)
+ 	if (IS_ENABLED(CONFIG_USE_PREBOOT))
+ 		run_preboot_environment_command();
+ 
++	if (event_notify_null(EVT_POST_PREBOOT))
++		return;
++
+ 	if (IS_ENABLED(CONFIG_UPDATE_TFTP))
+ 		update_tftp(0UL, NULL, NULL);
+ 
 diff --git a/common/usb_storage.c b/common/usb_storage.c
 index ac331f1c1b0..fe1b5b6bf64 100644
 --- a/common/usb_storage.c
@@ -2264,7 +2420,7 @@ index ac331f1c1b0..fe1b5b6bf64 100644
  			iface->desc.bInterfaceSubClass > US_SC_MAX) {
  		debug("Not mass storage\n");
 diff --git a/configs/rpi_arm64_defconfig b/configs/rpi_arm64_defconfig
-index 69e8e72c5d7..479304f879b 100644
+index 69e8e72c5d7..6d5c8b9da74 100644
 --- a/configs/rpi_arm64_defconfig
 +++ b/configs/rpi_arm64_defconfig
 @@ -3,36 +3,99 @@ CONFIG_POSITION_INDEPENDENT=y
@@ -2286,7 +2442,7 @@ index 69e8e72c5d7..479304f879b 100644
  CONFIG_FDT_SIMPLEFB=y
  CONFIG_USE_PREBOOT=y
 -CONFIG_PREBOOT="pci enum; usb start;"
-+CONFIG_PREBOOT="pci enum; nvme scan; usb start; if test -n \"${pieeprom_addr}\"; then fatwrite usb :auto ${pieeprom_addr} pieeprom.bin ${pieeprom_size}; fi; if load usb :auto ${scriptaddr} recovery.000; then fatrm usb :auto recovery.000; fatrm usb :auto pieeprom.upd; fatrm usb :auto pieeprom.sig; fi"
++CONFIG_PREBOOT="pci enum; nvme scan; usb start"
  CONFIG_SYS_PBSIZE=1049
  # CONFIG_DISPLAY_CPUINFO is not set
  # CONFIG_DISPLAY_BOARDINFO is not set
@@ -7078,6 +7234,26 @@ index 3e70ac07055..bb363dec971 100644
  /* Delete selected boot option */
  efi_status_t efi_bootmgr_delete_boot_option(u16 boot_index);
  /* Invoke EFI boot manager */
+diff --git a/include/event.h b/include/event.h
+index 1d267f1d105..3ce5f992b04 100644
+--- a/include/event.h
++++ b/include/event.h
+@@ -153,6 +153,15 @@ enum event_t {
+ 	 */
+ 	EVT_MAIN_LOOP,
+ 
++	/**
++	 * @EVT_POST_PREBOOT:
++	 * This event is triggered in main_loop() after the preboot command
++	 * has run, so that devices initialised by preboot (e.g. USB, UFS)
++	 * are available to event handlers. Its parameter is NULL.
++	 * A non-zero return value causes the boot to fail.
++	 */
++	EVT_POST_PREBOOT,
++
+ 	/**
+ 	 * @EVT_OF_LIVE_BUILT:
+ 	 * This event is triggered immediately after the live device tree has been
 diff --git a/include/nvme.h b/include/nvme.h
 index 2cdf8ce320c..8ff823cd81c 100644
 --- a/include/nvme.h
@@ -7340,7 +7516,7 @@ index f490081f654..b6b8e5e79c6 100644
  endif
  obj-y += efi_watchdog.o
 diff --git a/lib/efi_loader/efi_bootmgr.c b/lib/efi_loader/efi_bootmgr.c
-index a687f4d8e85..d7cbb560790 100644
+index a687f4d8e85..06a2126aee6 100644
 --- a/lib/efi_loader/efi_bootmgr.c
 +++ b/lib/efi_loader/efi_bootmgr.c
 @@ -10,7 +10,9 @@
@@ -7353,67 +7529,7 @@ index a687f4d8e85..d7cbb560790 100644
  #include <efi.h>
  #include <efi_device_path.h>
  #include <env.h>
-@@ -477,6 +479,46 @@ static void EFIAPI efi_bootmgr_http_return(struct efi_event *event,
- 	EFI_EXIT(ret);
- }
- 
-+/**
-+ * efi_bootmgr_tftp_load() - download a tftp:// URI via the tftp command
-+ *
-+ * The UEFI boot manager has no native PXE/network loader, but a boot option
-+ * with a URI device path lets us treat "tftp://<host>/<path>" like the HTTP
-+ * URI case: run the normal U-Boot tftp command to @addr. This keeps PXE boot
-+ * expressible as an ordinary Boot#### variable (managed in BootOrder just like
-+ * disk and http:// entries).
-+ *
-+ * @addr:	load address
-+ * @uri:	"tftp://<host>/<path>" URI (host must be an IP address)
-+ * Return:	0 on success, -1 on failure
-+ */
-+static int efi_bootmgr_tftp_load(ulong addr, const char *uri)
-+{
-+	struct cmd_tbl cmdtp = {};
-+	char addr_str[17];
-+	char host_file[256];
-+	char *tftp_argv[] = {"tftp", addr_str, host_file, NULL};
-+	const char *host = uri + strlen("tftp://");
-+	const char *slash = strchr(host, '/');
-+	size_t host_len;
-+
-+	/* Expect tftp://<host>/<path> with a non-empty host and path */
-+	if (!slash || slash == host || !slash[1])
-+		return -1;
-+	host_len = slash - host;
-+	if (host_len + 1 + strlen(slash + 1) + 1 > sizeof(host_file))
-+		return -1;
-+
-+	/* The tftp command expects "<host>:<path>" */
-+	memcpy(host_file, host, host_len);
-+	host_file[host_len] = ':';
-+	strcpy(host_file + host_len + 1, slash + 1);
-+	snprintf(addr_str, sizeof(addr_str), "%lx", addr);
-+
-+	/* do_tftpb() returns CMD_RET_SUCCESS (0) on success */
-+	return do_tftpb(&cmdtp, 0, 3, tftp_argv) ? -1 : 0;
-+}
-+
- /**
-  * try_load_from_uri_path() - Handle the URI device path
-  *
-@@ -520,7 +562,11 @@ static efi_status_t try_load_from_uri_path(struct efi_device_path_uri *uridp,
- 	}
- 
- 	image_addr = hextoul(s, NULL);
--	err = wget_do_request(image_addr, uridp->uri);
-+	if (!strncmp((const char *)uridp->uri, "tftp://", strlen("tftp://")))
-+		err = efi_bootmgr_tftp_load(image_addr,
-+					    (const char *)uridp->uri);
-+	else
-+		err = wget_do_request(image_addr, uridp->uri);
- 	if (err < 0) {
- 		ret = EFI_INVALID_PARAMETER;
- 		goto err;
-@@ -1237,6 +1283,86 @@ out:
+@@ -1237,6 +1239,86 @@ out:
  	return ret;
  }
  
