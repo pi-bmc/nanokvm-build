@@ -19,7 +19,7 @@ DEPENDS = "dtc-native"
 
 inherit deploy nopackages
 
-COMPATIBLE_MACHINE = "pi-bmc-rpi64"
+COMPATIBLE_MACHINE = "rpi64"
 
 do_configure[noexec] = "1"
 do_install[noexec] = "1"

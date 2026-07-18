@@ -18,10 +18,10 @@ NO_RECOMMENDATIONS = "1"
 IMAGE_FSTYPES = "wic.xz"
 
 do_image_wic[depends] += " \
-    u-boot-pibmc:do_deploy \
+    u-boot-rpi:do_deploy \
     armstub-tfa:do_deploy \
     rpi-firmware:do_deploy \
-    pibmc-config:do_deploy \
-    pibmc-overlays:do_deploy \
+    rpi-config:do_deploy \
+    rpi-overlays:do_deploy \
     talos-dtbs:do_deploy \
 "

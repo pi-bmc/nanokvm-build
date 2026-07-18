@@ -1,5 +1,5 @@
 SUMMARY = "Device tree overlays built from the Raspberry Pi kernel tree"
-DESCRIPTION = "Applies the pi-bmc DTB patches to raspberrypi/linux, adds the \
+DESCRIPTION = "Applies the rpi DTB patches to raspberrypi/linux, adds the \
 custom overlay sources (smbios, disable-v3d, enable-bt, ...) and builds every \
 overlay in arch/arm/boot/dts/overlays with cpp + dtc, exactly like the \
 build-kernel-dtbos job of the reference GitHub workflow. Overlays baked into \
@@ -81,9 +81,9 @@ do_compile() {
 do_install[noexec] = "1"
 
 do_deploy() {
-    install -d ${DEPLOYDIR}/pibmc-overlays
-    install -m 0644 ${B}/overlays/*.dtbo ${DEPLOYDIR}/pibmc-overlays/
-    install -m 0644 ${B}/overlays/*.dtb ${DEPLOYDIR}/pibmc-overlays/
+    install -d ${DEPLOYDIR}/rpi-overlays
+    install -m 0644 ${B}/overlays/*.dtbo ${DEPLOYDIR}/rpi-overlays/
+    install -m 0644 ${B}/overlays/*.dtb ${DEPLOYDIR}/rpi-overlays/
 }
 addtask deploy after do_compile before do_build
 

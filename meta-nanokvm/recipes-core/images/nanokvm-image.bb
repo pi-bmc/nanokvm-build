@@ -145,14 +145,14 @@ IMAGE_INSTALL:append = " \
     "
 
 # --- Raspberry Pi boot image (served to the managed Pi via the USB gadget) ---
-# pibmc-firmware-seed carries the aarch64 U-Boot image built by the "pi-bmc"
-# multiconfig (the vendored meta-pibmc layer) into the rootfs, gzip-compressed;
+# rpi-firmware-seed carries the aarch64 U-Boot image built by the "rpi"
+# multiconfig (the vendored meta-raspberrypi layer) into the rootfs, gzip-compressed;
 # S01fs decompresses it to /data/firmware/uboot-rpi.img on first boot. This is
-# what pulls the whole pi-bmc multiconfig into a `kas build kas.yml` -- the
+# what pulls the whole rpi multiconfig into a `kas build kas.yml` -- the
 # aarch64 TF-A/U-Boot/RPi-overlay build and the crane-based talos-dtbs fetch
 # run as a side effect of building this image.
 IMAGE_INSTALL:append = " \
-    pibmc-firmware-seed \
+    rpi-firmware-seed \
     "
 
 # --- Rootfs size: 1600 MB matches BR2_TARGET_ROOTFS_EXT2_SIZE="1600M" ---

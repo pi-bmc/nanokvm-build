@@ -22,7 +22,7 @@ DEPENDS = "dtc-native openssl-native python3-pyelftools-native"
 
 inherit deploy python3native nopackages
 
-COMPATIBLE_MACHINE = "pi-bmc-rpi64"
+COMPATIBLE_MACHINE = "rpi64"
 
 do_configure[noexec] = "1"
 

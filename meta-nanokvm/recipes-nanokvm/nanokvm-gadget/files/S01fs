@@ -55,14 +55,14 @@ case "$1" in
             echo "OK"
 
             # Seed the Raspberry Pi boot image the USB mass-storage gadget
-            # serves as lun.0. pibmc-firmware-seed ships it gzip-compressed in
+            # serves as lun.0. rpi-firmware-seed ships it gzip-compressed in
             # the rootfs; decompress once to the path the NanoKVM server
             # presents (config default Firmware.ImagePath). The server only
             # downloads a firmware image when this file is absent, so seeding it
             # makes the Pi boot our locally-built U-Boot with no network fetch.
             # Written to a temp file then renamed so a power cut mid-write never
             # leaves the server (which starts later, at rc5 S95) a short image.
-            seed=/usr/share/pibmc/uboot-rpi.img.gz
+            seed=/usr/share/rpi/uboot-rpi.img.gz
             target=/data/firmware/uboot-rpi.img
             if [ -s "$seed" ] && [ ! -e "$target" ]; then
                 printf "Seeding Pi boot image: "

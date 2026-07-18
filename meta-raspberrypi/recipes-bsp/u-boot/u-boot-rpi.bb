@@ -1,5 +1,5 @@
-SUMMARY = "U-Boot for Raspberry Pi 4/5 (pi-bmc boot image)"
-DESCRIPTION = "Upstream U-Boot built with the pi-bmc rpi_arm64 defconfig patch, \
+SUMMARY = "U-Boot for Raspberry Pi 4/5 (rpi boot image)"
+DESCRIPTION = "Upstream U-Boot built with the rpi_arm64 defconfig patch, \
 deployed as the kernel8.img payload of the boot partition."
 HOMEPAGE = "https://docs.u-boot.org"
 LICENSE = "GPL-2.0-or-later"

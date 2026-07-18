@@ -52,14 +52,14 @@ repos:
       .:
 
   # Raspberry Pi boot-image layer, vendored into this repo. Builds (under the
-  # "pi-bmc" multiconfig, see meta-nanokvm/conf/multiconfig/pi-bmc.conf) the
+  # "rpi" multiconfig, see meta-nanokvm/conf/multiconfig/rpi.conf) the
   # aarch64 U-Boot + TF-A + RPi firmware GPT image that the NanoKVM's USB
   # mass-storage gadget serves to the managed Pi. Copied from
   # bmcpi/firmware-images yocto/meta-pibmc with its ../u-boot patch/overlay/
   # config sources dereferenced in place, so it is fully self-contained (no
   # external checkout needed). Re-sync from upstream if those patches change.
-  meta-pibmc:
-    path: meta-pibmc
+  meta-raspberrypi:
+    path: meta-raspberrypi
     layers:
       .:
 
@@ -86,8 +86,8 @@ local_conf_header:
     # newest (pinned SRCREV recipes are unaffected -- they need no resolution).
     BB_SRCREV_POLICY = "clear"
     # Second multiconfig that builds the Raspberry Pi boot image (aarch64/poky)
-    # alongside this riscv64/musl one. conf/multiconfig/pi-bmc.conf (in
+    # alongside this riscv64/musl one. conf/multiconfig/rpi.conf (in
     # meta-nanokvm) sets its MACHINE/DISTRO/TCLIBC/TMPDIR; nanokvm-image pulls
-    # its output in via pibmc-firmware-seed's do_install[mcdepends]. The default
+    # its output in via rpi-firmware-seed's do_install[mcdepends]. The default
     # (this) config need not be listed here.
-    BBMULTICONFIG = "pi-bmc"
+    BBMULTICONFIG = "rpi"

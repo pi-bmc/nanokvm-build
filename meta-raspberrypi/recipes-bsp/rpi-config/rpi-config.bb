@@ -1,4 +1,4 @@
-SUMMARY = "config.txt for the pi-bmc U-Boot boot image"
+SUMMARY = "config.txt for the rpi U-Boot boot image"
 DESCRIPTION = "Deploys the repository's u-boot/config.txt (boot firmware \
 configuration for Raspberry Pi 4/5) into the boot partition."
 LICENSE = "MIT"
