@@ -9,7 +9,7 @@ PROVIDES += "u-boot virtual/bootloader"
 
 # Tag (or full sha / branch) of upstream U-Boot to build.
 # Overridden from the version file via the kas env passthrough.
-UBOOT_REF ?= "v2026.04"
+UBOOT_REF ?= "v2026.07"
 PV = "${@d.getVar('UBOOT_REF').lstrip('v')}"
 
 SRC_URI = " \
