@@ -74,8 +74,8 @@ local_conf_header:
     BB_NUMBER_THREADS = "${@oe.utils.cpu_count()}"
     PARALLEL_MAKE = "-j ${@oe.utils.cpu_count()}"
     # Shared download and sstate directories (can be overridden per user)
-    DL_DIR = "${TOPDIR}/downloads"
-    SSTATE_DIR = "${TOPDIR}/sstate-cache"
+    # DL_DIR = "${TOPDIR}/downloads"
+    # SSTATE_DIR = "${TOPDIR}/sstate-cache"
     # Accept commercial licenses needed by some multimedia components
     LICENSE_FLAGS_ACCEPTED = "commercial"
     # Disable interactive prompts
@@ -91,3 +91,6 @@ local_conf_header:
     # its output in via rpi-firmware-seed's do_install[mcdepends]. The default
     # (this) config need not be listed here.
     BBMULTICONFIG = "rpi"
+    # Shared download and sstate directories (can be overridden per user)
+    DL_DIR = "/opt/yocto/downloads"
+    SSTATE_DIR = "/opt/yocto/sstate-cache"

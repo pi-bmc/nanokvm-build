@@ -55,6 +55,11 @@ IMAGE_INSTALL:append = " \
 # usbutils (no USB host), iperf3, mtr, tcpdump, traceroute, sysstat, socat,
 # netcat-openbsd, rsync. None are referenced by nanokvm-server, which shells out
 # only to mount, passwd, reboot, sh, sync and umount.
+# mDNS (<hostname>.local) is served by nanokvm-server's built-in responder
+# (server/service/mdns, a pion/mdns hostname responder scoped to eth0), so
+# avahi-daemon is intentionally NOT installed. It previously only published the
+# host A/AAAA record anyway (its example service files are stripped by the base
+# recipe), which the in-server responder replicates.
 IMAGE_INSTALL:append = " \
     nanokvm-network \
     busybox-udhcpc \
@@ -63,7 +68,6 @@ IMAGE_INSTALL:append = " \
     ntp \
     ethtool \
     iproute2 \
-    avahi-daemon \
     ssdp-responder \
     "
 
