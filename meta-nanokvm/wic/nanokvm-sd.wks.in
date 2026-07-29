@@ -1,0 +1,37 @@
+# NanoKVM SD card partition layout for Sophgo SG2002 / LicheeRV Nano
+#
+# Partition map (MBR, all four primaries):
+#   p1: FAT16,  80 MB  - fip.bin (OpenSBI+U-Boot FIT), kernel Image, DTB,
+#                        initramfs, extlinux/extlinux.conf, and the NanoKVM
+#                        runtime config files (IMAGE_BOOT_FILES), including
+#                        the rootfs slot selector file "slot" ("a"|"b").
+#   p2: 512 MB         - rootfs slot A: the squashfs-zst image (read-only;
+#                        the initramfs lays a volatile tmpfs overlay over it).
+#   p3: 512 MB         - rootfs slot B: empty ext4 placeholder at factory. An
+#                        image update writes a new squashfs here and flips
+#                        /boot/slot; the initramfs falls back to the other
+#                        slot when the selected one does not mount.
+#   p4:                - NOT in this layout: the ext4 data partition
+#                        (/var/lib/nanokvm) is created by the initramfs on
+#                        first boot from all remaining space, so it always
+#                        fills whatever card the image is flashed to.
+#
+# This is a .wks.in template: ${...} bitbake variables are expanded before
+# wic runs. rawcopy accepts the absolute IMGDEPLOYDIR path; the squashfs-zst
+# artifact/symlink exists by then via IMAGE_TYPEDEP:wic in nanokvm-image.bb.
+#
+# NOTE: each wic .wks directive must be on a single line - the parser
+# shlex-splits each line individually and does not support backslash
+# continuations (a trailing '\' raises "No escaped character").
+#
+# --ondisk must be "mmcblk0" (not "mmcblk"): wic derives the /etc/fstab device
+# name from it, so "mmcblk" yields "/dev/mmcblkp1" (a non-existent node) and the
+# /boot mount silently fails. "mmcblk0" yields the correct "/dev/mmcblk0p1".
+
+bootloader --ptable msdos
+part /boot --source bootimg-partition --ondisk mmcblk0 --fstype msdos --label BOOT --active --align 1024 --size 81920K
+# --fstype on a rawcopy part never runs mkfs (content comes from the file);
+# it only sets the MBR partition type (ext4 -> 0x83 instead of the vfat
+# default's 0xc).
+part --source rawcopy --sourceparams="file=${IMGDEPLOYDIR}/${IMAGE_LINK_NAME}.squashfs-zst" --ondisk mmcblk0 --fstype ext4 --align 1024 --fixed-size 524288K
+part --ondisk mmcblk0 --fstype ext4 --label rootfsB --align 1024 --fixed-size 524288K

@@ -1,0 +1,36 @@
+#!/bin/sh
+# Compressed RAM swap on the built-in zram0 device.
+#
+# Formerly a udev rule; with no device manager on the image (devtmpfs provides
+# every node, nothing hotplugs) this is a plain one-shot init script. The
+# zram driver is built in (CONFIG_ZRAM=y), so /dev/zram0 exists by the time
+# rcS runs.
+#
+# lzo-rle is the only backend built into this kernel (CONFIG_ZRAM_BACKEND_
+# FORCE_LZO) and is the right trade for this low-power C906 core. disksize is
+# capped near physical RAM (~207 MiB usable): zram's disksize is the
+# *uncompressed* capacity but the compressed pages live in RAM, so a multi-GB
+# size would let the kernel commit far more swap than can fit and OOM the
+# board. Priority 100 so the kernel prefers zram over any other swap.
+
+ZRAM=/sys/block/zram0
+
+case "$1" in
+    start)
+        [ -d "$ZRAM" ] || exit 0
+        # Idempotent: a non-zero disksize means it is already configured.
+        [ "$(cat $ZRAM/disksize 2>/dev/null)" = "0" ] || exit 0
+        printf "Enabling zram swap: "
+        echo lzo-rle > $ZRAM/comp_algorithm 2>/dev/null
+        echo 256M > $ZRAM/disksize
+        mkswap /dev/zram0 >/dev/null 2>&1 && swapon -p 100 /dev/zram0 \
+            && echo "OK" || echo "FAIL"
+        ;;
+    stop)
+        swapoff /dev/zram0 2>/dev/null
+        ;;
+    *)
+        echo "Usage: $0 {start|stop}"
+        exit 1
+        ;;
+esac

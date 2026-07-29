@@ -29,7 +29,7 @@ FILESEXTRAPATHS:prepend := "${THISDIR}/files:"
 do_compile[network] = "1"
 
 # Module/build root (go.bbclass unpacks the checkout under src/${GO_IMPORT} and
-# sets GOPATH=${B}); the three main packages live in cmd/.
+# sets GOPATH=${B}).
 GO_APP_DIR = "${B}/src/${GO_IMPORT}"
 
 # go-mod adds "${B}/.mod" to cleandirs, but the auto-downloaded toolchain marks
@@ -56,31 +56,28 @@ do_compile() {
     # read-only) module/toolchain cache writable so cleandirs/rm can remove it.
     export GOFLAGS="-mod=mod"
 
-    for cmd in server rpiboot fw_env; do
-        out="NanoKVM-Server"
-        [ "$cmd" = server ] || out="$cmd"
-        ${GO} build -v -trimpath -modcacherw -ldflags "-s -w" \
-            -o ${B}/$out ./cmd/$cmd
-    done
+    # Only the server is built/installed. The repo's other cmd/ tools
+    # (rpiboot, fw_env) are developer CLIs the server never execs -- it does
+    # rpiboot-mode entry in-process (server/service/power) and owns the
+    # firmware image env itself (server/service/firmware) -- so they have no
+    # place in the image.
+    ${GO} build -v -trimpath -modcacherw -ldflags "-s -w" \
+        -o ${B}/NanoKVM-Server ./cmd/server
 
     # Keep the module cache (incl. the read-only downloaded toolchain) writable
     # so bitbake/rm can clean ${B} later.
     chmod -R u+w ${B}/.mod 2>/dev/null || true
 }
 
-# The app expects its server binary under /kvmapp/server (the init script stages
-# it to /tmp/server at runtime for atomic in-place upgrades).
+# /kvmapp is the FACTORY copy of the app, baked into the read-only squashfs.
+# Self-updates never touch it: they install to /var/lib/nanokvm/app on the
+# persistent data partition, and the init script launches the first runnable
+# of app, app.prev, /kvmapp — so /kvmapp is the always-bootable fallback.
 KVMAPP_DIR = "/kvmapp"
 
 do_install() {
     install -d ${D}${KVMAPP_DIR}/server
     install -m 0755 ${B}/NanoKVM-Server ${D}${KVMAPP_DIR}/server/NanoKVM-Server
-
-    # BMC CLI tools: rpiboot (Raspberry Pi boot control) and fw_env (U-Boot
-    # environment r/w) -- both used for board/UEFI control.
-    install -d ${D}${bindir}
-    install -m 0755 ${B}/rpiboot ${D}${bindir}/rpiboot
-    install -m 0755 ${B}/fw_env  ${D}${bindir}/fw_env
 
     # Service init script (start/stop/status via start-stop-daemon), registered
     # through oe-core sysvinit/update-rc.d. We ship our own instead of the app's
@@ -103,14 +100,18 @@ do_install() {
 INITSCRIPT_NAME = "nanokvm"
 INITSCRIPT_PARAMS = "defaults 95"
 
+# The server's network service (server/service/network) shells out to `nft`
+# for the usb0 forward-path guard; it degrades gracefully when the binary is
+# absent, so a recommendation rather than a hard dependency. Everything else
+# networking (DHCP client/server, netlink addressing, mDNS) is in-process.
+RRECOMMENDS:${PN} = "nftables"
+
 # Statically-linked Go binaries: Go does its own linking/stripping, so skip the
 # LDFLAGS-injection and already-stripped QA checks that don't apply.
 INSANE_SKIP:${PN} += "ldflags already-stripped"
 
 FILES:${PN} = " \
     ${KVMAPP_DIR} \
-    ${bindir}/rpiboot \
-    ${bindir}/fw_env \
     ${sysconfdir}/init.d/nanokvm \
     ${sysconfdir}/init.d/S95nanokvm \
     "

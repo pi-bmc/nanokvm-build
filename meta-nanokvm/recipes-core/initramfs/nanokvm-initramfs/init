@@ -1,0 +1,161 @@
+#!/bin/sh
+# NanoKVM initramfs: assemble the real root and hand off to sysvinit.
+#
+# Boot flow (SD layout: see wic/nanokvm-sd.wks.in):
+#   1. Wait for the SD card (the kernel does not wait for us; this replaces
+#      the old "rootwait" cmdline parameter).
+#   2. First boot only: create the data partition (p4) from all space after
+#      the rootfs slots and format it ext4. This replaces the old S01fs
+#      parted/resize dance, which had to reshape the disk from a rootfs that
+#      was itself on it.
+#   3. Pick a rootfs slot: /slot on the FAT boot partition names "a" (p2) or
+#      "b" (p3). A slot that fails to mount falls back to the other, so a
+#      half-written image update can never brick the BMC.
+#   4. Mount the slot's squashfs read-only, lay a tmpfs overlay upper over it
+#      (VOLATILE by design: the root is byte-identical to the image on every
+#      boot; anything that must survive lives on the data partition), and
+#      mount the data partition at /var/lib/nanokvm inside the new root.
+#   5. switch_root into it.
+#
+# Persistence contract (everything else is volatile):
+#   /var/lib/nanokvm         ext4 data partition (p4), mounted here
+#     app/, app.prev/        server self-update install dirs (init script
+#                            falls back app -> app.prev -> baked-in /kvmapp)
+#     config/                bind-mounted over /etc/kvm (fstab)
+#     ssh/                   SSH host key + authorized_keys (the app is the
+#                            SSH server; no sshd in the image)
+#     firmware/, media/,     BMC state the server reads/writes (Pi boot
+#     efivars/, ubootenv/,   image, ISO media, EFI/U-Boot env mirrors,
+#     cache/, log/           update staging, host serial-console capture)
+
+PATH=/sbin:/usr/sbin:/bin:/usr/bin
+DISK=/dev/mmcblk0
+DATA_PART=${DISK}p4
+DATA_LABEL=nkvm-data
+
+msg() { echo "initramfs: $*"; }
+
+rescue() {
+    msg "FATAL: $*"
+    msg "dropping to a rescue shell; exit to reboot"
+    sh
+    reboot -f
+}
+
+grep -q ' /proc proc' /proc/mounts 2>/dev/null || mount -t proc proc /proc
+grep -q ' /sys sysfs' /proc/mounts || mount -t sysfs sysfs /sys
+grep -q ' /dev devtmpfs' /proc/mounts || mount -t devtmpfs devtmpfs /dev
+
+# Loopback: the main system runs no ifupdown (the NanoKVM server owns all
+# interface addressing), so bring lo up here — the netns is shared with the
+# final system, so this sticks across switch_root.
+ip link set lo up 2>/dev/null || ifconfig lo up 2>/dev/null
+
+# --- 1. wait for the SD card (rootwait equivalent) -------------------------
+tries=0
+while [ ! -b ${DISK}p2 ]; do
+    tries=$((tries + 1))
+    [ $tries -gt 30 ] && rescue "SD card ${DISK} did not appear"
+    sleep 1
+done
+
+# --- 2. first boot: create the data partition ------------------------------
+# Done before anything is mounted: BLKRRPART (kernel partition-table re-read)
+# fails with EBUSY once any partition on the disk is mounted.
+if [ ! -b ${DATA_PART} ]; then
+    msg "first boot: creating data partition ${DATA_PART}"
+    # Append a fourth primary partition using all remaining space.
+    echo ',,83' | sfdisk --append --quiet ${DISK} || msg "sfdisk failed"
+    tries=0
+    while [ ! -b ${DATA_PART} ] && [ $tries -lt 10 ]; do
+        tries=$((tries + 1))
+        sleep 1
+    done
+    if [ -b ${DATA_PART} ]; then
+        mke2fs -t ext4 -q -F -L ${DATA_LABEL} ${DATA_PART} \
+            || msg "mke2fs ${DATA_PART} failed"
+    else
+        msg "data partition did not appear; continuing without persistence"
+    fi
+fi
+
+# --- 3. slot selection -----------------------------------------------------
+SLOT=a
+mkdir -p /tmp/boot
+if mount -t vfat -o ro ${DISK}p1 /tmp/boot 2>/dev/null; then
+    s=$(tr -d ' \r\n' < /tmp/boot/slot 2>/dev/null)
+    [ "$s" = "b" ] && SLOT=b
+    umount /tmp/boot
+fi
+if [ "$SLOT" = "b" ]; then
+    TRY="${DISK}p3 ${DISK}p2"
+else
+    TRY="${DISK}p2 ${DISK}p3"
+fi
+
+# --- 4. root assembly ------------------------------------------------------
+mkdir -p /mnt/ro /mnt/rw /mnt/root
+LOWER=
+for dev in $TRY; do
+    if mount -t squashfs -o ro "$dev" /mnt/ro 2>/dev/null; then
+        LOWER=$dev
+        break
+    fi
+    msg "no usable rootfs on $dev, trying fallback slot"
+done
+[ -n "$LOWER" ] || rescue "no bootable rootfs in either slot"
+msg "rootfs: $LOWER (slot $SLOT)"
+
+# Volatile upper: capped so runaway writes to the root can never take the
+# whole of RAM (real state belongs on the data partition).
+mount -t tmpfs -o size=25%,mode=0755 tmpfs /mnt/rw
+mkdir -p /mnt/rw/upper /mnt/rw/work
+mount -t overlay \
+    -o "lowerdir=/mnt/ro,upperdir=/mnt/rw/upper,workdir=/mnt/rw/work" \
+    overlay /mnt/root || rescue "overlay mount failed"
+
+# Data partition: fsck, mount inside the new root, ensure the skeleton the
+# fstab binds and the server expect. If it is damaged beyond -y repair, boot
+# anyway with a tmpfs there so the BMC stays reachable for recovery.
+mkdir -p /mnt/root/var/lib/nanokvm
+if [ -b ${DATA_PART} ]; then
+    e2fsck -p ${DATA_PART} >/dev/null 2>&1
+    rc=$?
+    if [ $rc -ge 4 ]; then
+        msg "data partition dirty (e2fsck rc=$rc), retrying with -y"
+        e2fsck -y ${DATA_PART} >/dev/null 2>&1
+    fi
+    if ! mount -t ext4 ${DATA_PART} /mnt/root/var/lib/nanokvm; then
+        msg "data partition unmountable; using tmpfs (NO persistence)"
+        mount -t tmpfs tmpfs /mnt/root/var/lib/nanokvm
+    fi
+else
+    mount -t tmpfs tmpfs /mnt/root/var/lib/nanokvm
+fi
+mkdir -p \
+    /mnt/root/var/lib/nanokvm/app \
+    /mnt/root/var/lib/nanokvm/cache \
+    /mnt/root/var/lib/nanokvm/config \
+    /mnt/root/var/lib/nanokvm/efivars \
+    /mnt/root/var/lib/nanokvm/firmware/files \
+    /mnt/root/var/lib/nanokvm/firmware/mnt \
+    /mnt/root/var/lib/nanokvm/log \
+    /mnt/root/var/lib/nanokvm/media \
+    /mnt/root/var/lib/nanokvm/ssh \
+    /mnt/root/var/lib/nanokvm/ubootenv
+
+# --- 5. hand off -----------------------------------------------------------
+# Keep the squashfs and overlay-upper mounts reachable in the final mount
+# namespace. Under /mnt, NOT /run: poky's fstab mounts a fresh tmpfs over
+# /run at boot, which would shadow anything moved there.
+mkdir -p /mnt/root/mnt/initramfs/ro /mnt/root/mnt/initramfs/rw
+mount -o move /mnt/ro /mnt/root/mnt/initramfs/ro
+mount -o move /mnt/rw /mnt/root/mnt/initramfs/rw
+mount -o move /proc /mnt/root/proc
+mount -o move /sys /mnt/root/sys
+mount -o move /dev /mnt/root/dev
+
+# Must be exec'd: switch_root takes over as PID 1. If the exec itself fails
+# the shell exits and the kernel panics with "attempted to kill init" — the
+# honest failure mode at this point (nothing else can run).
+exec switch_root /mnt/root /sbin/init

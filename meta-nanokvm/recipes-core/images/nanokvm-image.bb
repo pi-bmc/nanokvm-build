@@ -3,6 +3,18 @@ LICENSE = "MIT"
 
 inherit core-image
 
+# --- Root filesystem: squashfs + volatile overlay -------------------------
+# The root is an immutable squashfs-zst image in an A/B slot pair (p2/p3);
+# the initramfs (nanokvm-initramfs-image) lays a volatile tmpfs overlay over
+# it and mounts the ext4 data partition (created on first boot from the rest
+# of the card) at /var/lib/nanokvm. Everything that must survive a reboot
+# lives there — see the initramfs /init for the persistence contract. A hard
+# power cut can therefore never corrupt the root: every boot starts from the
+# exact image bytes.
+IMAGE_FSTYPES += "squashfs-zst"
+IMAGE_TYPEDEP:wic = "squashfs-zst"
+WKS_FILE = "nanokvm-sd.wks.in"
+
 # Use the plain packagegroup-base (not -extended): -extended unconditionally
 # RDEPENDS packagegroup-base-wifi -> wireless-regdb-static and would drag in
 # wireless kernel modules. WiFi is intentionally absent from this image (the
@@ -14,40 +26,55 @@ CORE_IMAGE_BASE_INSTALL = "packagegroup-core-boot packagegroup-base"
 # No "package-management": there is no feed to install from, and it costs the
 # opkg binary plus its package database on every boot partition.
 #
-# "debug-tweaks" is retained deliberately. It is what leaves root with an empty
-# password and permits root ssh; dropping it on a headless board with no serial
-# console attached and no other account provisioned would lock you out. Replace
-# it with a real credential (EXTRA_USERS_PARAMS) before shipping hardware.
+# No "ssh-server-openssh" (nor dropbear): the NanoKVM server IS the SSH server.
+# It implements the transport in-process (nanokvm-app server/service/ssh, on
+# golang.org/x/crypto/ssh) and runs sessions on the same PTY code as the web
+# terminal, so SSH and the browser console are one implementation. That also
+# unifies the credentials -- SSH authenticates against the BMC account (the one
+# Redfish, IPMI and the web UI use) plus an authorized_keys file managed from
+# the Settings dialog -- instead of a second, independent user database in
+# /etc/shadow. Dropping sshd takes openssh, its sftp-server and the PAM/shadow
+# glue out of the image, and removes the init script the app used to shell out
+# to for the SSH on/off toggle.
+#
+# "debug-tweaks" is retained deliberately: it leaves root with an empty
+# password, which is what makes the serial console usable for recovery on a
+# board with no other provisioned credential. It no longer has anything to do
+# with SSH -- there is no sshd to permit root login -- so an empty root
+# password is not remotely exploitable on its own. Replace it with a real
+# credential (EXTRA_USERS_PARAMS) before shipping hardware.
 IMAGE_FEATURES += " \
-    ssh-server-openssh \
     debug-tweaks \
     "
 
-# Pulled in by RRECOMMENDS, not by anything here, and both are large:
+# Pulled in by RRECOMMENDS, not by anything here:
 #   kernel-image-image  ~29 MiB -- a second copy of the kernel in the rootfs's
 #                       /boot, which is then shadowed by the vfat mount over it.
 #                       The kernel U-Boot actually loads lives on the FAT
 #                       partition (IMAGE_BOOT_FILES), not here.
-#   eudev-hwdb          ~9.3 MiB of hwdb.bin plus 5.6 MiB of hwdb.d sources --
-#                       a PCI/USB vendor-model database for a board with no PCI
-#                       bus and no USB host controller.
-BAD_RECOMMENDATIONS += "kernel-image-image eudev-hwdb"
+#   init-ifupdown       ifupdown /etc/network glue (packagegroup-core-boot
+#                       RRECOMMENDS on sysvinit). All interface addressing --
+#                       including bringing up lo, done by the initramfs -- is
+#                       owned by the NanoKVM server; ifupdown would only fight
+#                       it.
+BAD_RECOMMENDATIONS += "kernel-image-image init-ifupdown"
 
 # --- System foundation ---
 # Dropped: kmod (CONFIG_MODULES=n -- nothing to load), util-linux-rfkill (no
 # radio), file (8.2 MiB magic.mgc), watchdog (no wdt node in the DTS, so
 # /dev/watchdog never appears and the daemon failed on every boot).
+# parted / e2fsprogs-resize2fs / exfatprogs are gone too: disk provisioning
+# (data-partition creation) moved into the initramfs, which carries its own
+# sfdisk/mke2fs, and the data partition is ext4 now, not exfat.
+# eudev + udev-extraconf are gone with the device manager (see the distro
+# conf): devtmpfs provides every node, nothing hotplugs, and the automount/
+# autonet udev glue had no remaining job.
 IMAGE_INSTALL:append = " \
     zram-swap \
     busybox \
     bash \
     util-linux \
     e2fsprogs \
-    e2fsprogs-resize2fs \
-    exfatprogs \
-    parted \
-    eudev \
-    udev-extraconf \
     "
 
 # --- Network core ---
@@ -60,15 +87,24 @@ IMAGE_INSTALL:append = " \
 # avahi-daemon is intentionally NOT installed. It previously only published the
 # host A/AAAA record anyway (its example service files are stripped by the base
 # recipe), which the in-server responder replicates.
+# Interface addressing is owned entirely by nanokvm-server
+# (server/service/network, netlink): eth0 static/DHCP (in-process DHCPv4
+# client), the /boot/eth.mac override, and the usb0 Redfish-Host-Interface
+# link (169.254.10.1/16, isolation sysctls, nft forward guard, single-lease
+# in-process DHCP server for the host). That retired the nanokvm-network
+# recipe (ifupdown hooks + udhcpd-usb0.conf), busybox-udhcpc (nothing runs
+# udhcpc anymore) and finally ifupdown itself -- the initramfs brings lo up,
+# so no /etc/network/interfaces exists at all. iproute2 stays for operator
+# debugging only.
+# ssdp-responder is gone (JetKVM-style minimalism): the server's built-in
+# mDNS responder already provides discovery, and the BMC is always reachable
+# at the well-known RHI address; a second discovery daemon earned no keep.
 IMAGE_INSTALL:append = " \
-    nanokvm-network \
-    busybox-udhcpc \
     iputils \
     iputils-arping \
     ntp \
     ethtool \
     iproute2 \
-    ssdp-responder \
     "
 
 # --- WiFi / Bluetooth ---
@@ -83,14 +119,17 @@ IMAGE_INSTALL:append = " \
     wireguard-tools \
     "
 
-# --- SSH / security / crypto ---
-# haveged stays: the SG2002 has no hardware RNG, so the entropy pool fills very
-# slowly and sshd's first key exchange after boot otherwise stalls. krb5 is
-# dropped -- nothing authenticates against a KDC.
+# --- Security / crypto ---
+# haveged is gone: it predates the kernel's own jitter entropy. This kernel
+# has CONFIG_CRYPTO_JITTERENTROPY=y, which seeds the crng the same way haveged
+# did from userspace, so the daemon was redundant. (If the app's first-boot SSH
+# host-key generation ever stalls on real hardware, that would be the reason --
+# re-add it then.)
+# krb5 is dropped -- nothing authenticates against a KDC.
+# No SSH packages here: the server is in-process (see IMAGE_FEATURES above).
 IMAGE_INSTALL:append = " \
     openssl \
     ca-certificates \
-    haveged \
     "
 
 # --- Compression ---
@@ -109,11 +148,12 @@ IMAGE_INSTALL:append = " \
     "
 
 # --- Input ---
-# input-event-daemon drives the front-panel power/reset buttons declared in the
-# board DTS (&porta gpio-line-names). evtest and fbset are dropped.
-IMAGE_INSTALL:append = " \
-    input-event-daemon \
-    "
+# input-event-daemon is gone: it was installed with upstream's *sample*
+# config, no init script and no inittab entry — it never ran and would have
+# done nothing NanoKVM-related if it had. The front-panel buttons (gpio-keys
+# in the board DTS -> /dev/input/event*) belong in the NanoKVM server as an
+# in-process evdev reader wired to its own power service, JetKVM-style.
+# evtest and fbset are dropped.
 
 # --- Python 3 ---
 # Intentionally none. 68 python3-* packages, ~15 MiB with libpython3.12 and the
@@ -126,17 +166,15 @@ IMAGE_INSTALL:append = " \
 # /dev/spidev* never appears). busybox supplies vi, top and ps.
 
 # --- Sophgo SDK ---
-# The closed-source multimedia/AI stack (sophgo-middleware, cvi-rtsp, osdrv,
-# maix-cdk, sg2002-codec-firmware) is intentionally removed: it ships proprietary
-# ISP tuning blobs and CLOSED-licensed cvitek kernel modules (VI/VPSS/VENC/ISP/
-# TPU), and the pure-Go app does not link or exec it. This drops hardware HDMI
-# capture / RTSP streaming; only the open-source BMC path remains. What stays are
-# the non-video vendor bits: axp2101 (PMU power management) and cvi-pinmux.
-# uvc-gadget went with it -- nothing creates a uvc function (see nanokvm.cfg).
-IMAGE_INSTALL:append = " \
-    cvi-pinmux \
-    axp2101 \
-    "
+# Fully removed, along with the whole meta-sophgo-sdk layer. The closed
+# multimedia/AI stack (sophgo-middleware, cvi-rtsp, osdrv, maix-cdk,
+# sg2002-codec-firmware) went first (proprietary ISP blobs, CLOSED cvitek
+# kernel modules; the pure-Go app does not link or exec any of it), and the
+# last two stragglers -- axp2101 and cvi-pinmux, CLOSED-licensed AUTOREV
+# debug CLIs from the vendor osdrv tree -- were installed but never executed
+# by anything: pinmuxing is owned by the DTS/pinctrl and PMIC power is not
+# managed from userspace on this board. uvc-gadget is gone too -- nothing
+# creates a uvc function (see nanokvm.cfg).
 
 # --- NanoKVM application ---
 # i2c-eeprom is gone: the board DTS declares both the i2c1 pinmux and the
@@ -151,29 +189,30 @@ IMAGE_INSTALL:append = " \
 # --- Raspberry Pi boot image (served to the managed Pi via the USB gadget) ---
 # rpi-firmware-seed carries the aarch64 U-Boot image built by the "rpi"
 # multiconfig (the vendored meta-raspberrypi layer) into the rootfs, gzip-compressed;
-# S01fs decompresses it to /data/firmware/uboot-rpi.img on first boot. This is
-# what pulls the whole rpi multiconfig into a `kas build kas.yml` -- the
-# aarch64 TF-A/U-Boot/RPi-overlay build and the crane-based talos-dtbs fetch
-# run as a side effect of building this image.
+# the nanokvm-data init script decompresses it to
+# /var/lib/nanokvm/firmware/uboot-rpi.img (persistent data partition) on first
+# boot. This is what pulls the whole rpi multiconfig into a `kas build kas.yml`
+# -- the aarch64 TF-A/U-Boot/RPi-overlay build and the crane-based talos-dtbs
+# fetch run as a side effect of building this image.
 IMAGE_INSTALL:append = " \
     rpi-firmware-seed \
     "
 
-# --- Rootfs size: 1600 MB matches BR2_TARGET_ROOTFS_EXT2_SIZE="1600M" ---
-IMAGE_ROOTFS_SIZE = "1638400"
-IMAGE_ROOTFS_EXTRA_SPACE = "65536"
-
 # --- SD card image via WKS ---
-WKS_FILE = "nanokvm-sd.wks"
-do_image_wic[depends] += "fsbl:do_deploy linux-sophgo:do_deploy"
+# (No IMAGE_ROOTFS_SIZE: squashfs is content-sized; the wks pins the slot
+# partitions at 512 MB and rawcopy errors out if the squashfs outgrows them.)
+do_image_wic[depends] += "fsbl:do_deploy linux-sophgo:do_deploy nanokvm-initramfs-image:do_image_complete"
 
 # --- Boot-partition config files ---
 # nanokvm-gadget deploys these to DEPLOY_DIR_IMAGE; wic's bootimg-partition puts
 # them on the FAT boot partition next to fip.bin, the kernel Image and the DTB.
-# Read at runtime from /boot by the USB gadget udev rule and the app.
+# Read at runtime from /boot by the NanoKVM server (server/service/usbgadget
+# owns the gadget now; usb.ecm0 seeds the default ECM function on first boot).
 # extlinux.conf is the mainline U-Boot boot menu (bootmeth_extlinux scans
-# /extlinux/extlinux.conf).
-IMAGE_BOOT_FILES:append = " board hostname.prefix ver usb.keyboard usb.mouse usb.ecm0 extlinux.conf;extlinux/extlinux.conf"
+# /extlinux/extlinux.conf); it loads the initramfs (INITRD) built by
+# nanokvm-initramfs-image. "slot" selects the active rootfs slot ("a" = p2).
+IMAGE_BOOT_FILES:append = " board hostname.prefix ver usb.ecm0 slot extlinux.conf;extlinux/extlinux.conf"
+IMAGE_BOOT_FILES:append = " nanokvm-initramfs-image-${MACHINE}.cpio.gz;initramfs"
 do_image_wic[depends] += "nanokvm-gadget:do_deploy"
 
 # --- Publish under the original LicheeRV-Nano-Build image name ---

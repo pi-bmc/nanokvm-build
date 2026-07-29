@@ -16,6 +16,7 @@ SRC_URI = "git://source.denx.de/u-boot/u-boot.git;protocol=https;branch=master \
            file://0003-licheerv-nano-cap-sdhci0-to-default-speed.patch \
            file://0004-licheerv-nano-init-internal-ephy.patch \
            file://0005-licheerv-nano-efuse-mac.patch \
+           file://0006-licheerv-nano-ramdisk-addr.patch \
            "
 
 # 0002-licheerv-nano-raise-load-addrs.patch is gone. It existed because the old

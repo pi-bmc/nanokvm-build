@@ -12,14 +12,19 @@ target: nanokvm-image
 build_system: openembedded
 
 repos:
+  # meta-yocto-bsp (qemu/x86/beaglebone BSPs) is intentionally absent; meta-poky
+  # stays because the rpi multiconfig uses DISTRO = "poky".
   poky:
     url: https://git.yoctoproject.org/poky
     branch: scarthgap
     layers:
       meta:
       meta-poky:
-      meta-yocto-bsp:
 
+  # meta-oe: haveged, jansson (nftables dep). meta-networking: nftables,
+  # libnftnl, ntp, wireguard-tools. meta-python ships nothing into the image
+  # but is a hard LAYERDEPENDS of meta-networking. meta-filesystems was only
+  # needed for exfatprogs, gone with the exfat /data partition.
   meta-openembedded:
     url: https://git.openembedded.org/meta-openembedded
     branch: scarthgap
@@ -27,22 +32,16 @@ repos:
       meta-oe:
       meta-networking:
       meta-python:
-      meta-filesystems:
 
-  meta-riscv:
-    url: https://github.com/riscv/meta-riscv
-    branch: scarthgap
-    layers:
-      .:
+  # meta-riscv is intentionally absent: oe-core provides the riscv64 tune
+  # (conf/machine/include/riscv/tune-riscv.inc) and every meta-riscv bbappend
+  # is gated on other machines (jh7110/milkv-duo/ae350) or riscv32. The two
+  # QA waivers it carried that DO apply here (eudev/util-linux textrel on
+  # riscv64) moved into meta-nanokvm's distro conf.
 
   # Local layers (inside this repo, no git fetch needed)
   meta-sophgo:
     path: meta-sophgo
-    layers:
-      .:
-
-  meta-sophgo-sdk:
-    path: meta-sophgo-sdk
     layers:
       .:
 
@@ -73,11 +72,6 @@ local_conf_header:
     # Parallel build tuning
     BB_NUMBER_THREADS = "${@oe.utils.cpu_count()}"
     PARALLEL_MAKE = "-j ${@oe.utils.cpu_count()}"
-    # Shared download and sstate directories (can be overridden per user)
-    # DL_DIR = "${TOPDIR}/downloads"
-    # SSTATE_DIR = "${TOPDIR}/sstate-cache"
-    # Accept commercial licenses needed by some multimedia components
-    LICENSE_FLAGS_ACCEPTED = "commercial"
     # Disable interactive prompts
     CONNECTIVITY_CHECK_URIS = ""
     # AUTOREV recipes (nanokvm-server) must track the current upstream HEAD.
