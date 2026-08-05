@@ -125,7 +125,7 @@ if [ -b ${DATA_PART} ]; then
         msg "data partition dirty (e2fsck rc=$rc), retrying with -y"
         e2fsck -y ${DATA_PART} >/dev/null 2>&1
     fi
-    if ! mount -t ext4 ${DATA_PART} /mnt/root/var/lib/nanokvm; then
+    if ! mount -t ext4 -o noatime ${DATA_PART} /mnt/root/var/lib/nanokvm; then
         msg "data partition unmountable; using tmpfs (NO persistence)"
         mount -t tmpfs tmpfs /mnt/root/var/lib/nanokvm
     fi

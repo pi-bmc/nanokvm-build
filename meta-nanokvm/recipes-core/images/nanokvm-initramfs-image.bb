@@ -29,5 +29,6 @@ inherit core-image
 IMAGE_ROOTFS_SIZE = "8192"
 IMAGE_ROOTFS_EXTRA_SPACE = "0"
 
-# No interactive login shell, no syslog: PID 1 is /init, nothing else runs.
-BAD_RECOMMENDATIONS += "busybox-syslog"
+# No interactive login shell, no syslog, no DHCP: PID 1 is /init, nothing
+# else runs (lo is the only interface the initramfs touches).
+BAD_RECOMMENDATIONS += "busybox-syslog busybox-udhcpc"

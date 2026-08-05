@@ -22,12 +22,17 @@ SRC_URI = " \
 "
 S = "${WORKDIR}"
 
-inherit deploy
+inherit deploy update-rc.d
+
+# S06 in rc5: after zram (S05, rcS), before the server (S95) that reads the
+# seeded firmware image. Same registration mechanism as the sibling recipes
+# (zram-swap, nanokvm-server) instead of a hand-rolled rc5.d symlink.
+INITSCRIPT_NAME = "nanokvm-data"
+INITSCRIPT_PARAMS = "start 06 5 ."
 
 do_install() {
-    install -d ${D}${sysconfdir}/init.d ${D}${sysconfdir}/rc5.d
+    install -d ${D}${sysconfdir}/init.d
     install -m 0755 ${WORKDIR}/nanokvm-data ${D}${sysconfdir}/init.d/nanokvm-data
-    ln -sf ../init.d/nanokvm-data ${D}${sysconfdir}/rc5.d/S06nanokvm-data
 }
 
 # The config files live on the FAT boot partition (read at runtime from /boot

@@ -57,7 +57,11 @@ IMAGE_FEATURES += " \
 #                       including bringing up lo, done by the initramfs -- is
 #                       owned by the NanoKVM server; ifupdown would only fight
 #                       it.
-BAD_RECOMMENDATIONS += "kernel-image-image init-ifupdown"
+# busybox-udhcpc: busybox RRECOMMENDS it back despite the in-process DHCP
+# client (see the network comment below). hdparm (ATA tuning on an SD-only
+# board) and the e2fsprogs metapackage ride in on packagegroup-base-ext2's
+# RRECOMMENDS; the e2fsck/mke2fs subpackages it hard-RDEPENDS stay.
+BAD_RECOMMENDATIONS += "kernel-image-image init-ifupdown busybox-udhcpc hdparm e2fsprogs"
 
 # --- System foundation ---
 # Dropped: kmod (CONFIG_MODULES=n -- nothing to load), util-linux-rfkill (no
@@ -66,6 +70,12 @@ BAD_RECOMMENDATIONS += "kernel-image-image init-ifupdown"
 # parted / e2fsprogs-resize2fs / exfatprogs are gone too: disk provisioning
 # (data-partition creation) moved into the initramfs, which carries its own
 # sfdisk/mke2fs, and the data partition is ext4 now, not exfat.
+# The util-linux metapackage is gone with them (~7 MiB of subpackages, every
+# exercised tool shadowed by a compiled-in busybox applet); util-linux-agetty
+# stays so the serial getty keeps its current implementation. The e2fsprogs
+# metapackage is gone for the same reason -- the rootfs runs no fsck/mkfs
+# (the initramfs owns both); packagegroup-base-ext2 still hard-pulls the
+# e2fsck/mke2fs subpackages.
 # eudev + udev-extraconf are gone with the device manager (see the distro
 # conf): devtmpfs provides every node, nothing hotplugs, and the automount/
 # autonet udev glue had no remaining job.
@@ -73,8 +83,7 @@ IMAGE_INSTALL:append = " \
     zram-swap \
     busybox \
     bash \
-    util-linux \
-    e2fsprogs \
+    util-linux-agetty \
     "
 
 # --- Network core ---
@@ -103,8 +112,9 @@ IMAGE_INSTALL:append = " \
 # (server/service/timesync, a JetKVM-style SNTP client with an HTTP Date
 # fallback that also honors NTP servers from the DHCP lease), so the last
 # non-app network daemon and its init script left the image.
+# The iputils metapackage is dropped: busybox compiles ping/ping6/traceroute,
+# so only arping (no busybox applet) earns its keep.
 IMAGE_INSTALL:append = " \
-    iputils \
     iputils-arping \
     ethtool \
     iproute2 \
@@ -145,10 +155,9 @@ IMAGE_INSTALL:append = " \
 # websocket and QR handling), plus tslib, libinput, libxkbcommon, fontconfig,
 # freetype and hicolor-icon-theme -- an input/display/font stack on a board with
 # no display, kept alive only by their own inter-dependencies.
-IMAGE_INSTALL:append = " \
-    libcurl \
-    curl \
-    "
+# curl + libcurl are gone too (~2.6 MiB with their libidn2/libunistring tail):
+# the Go server does its own HTTP and nothing in the image shells out to curl;
+# busybox wget (HTTPS-enabled) covers ad-hoc operator fetches.
 
 # --- Input ---
 # input-event-daemon is gone: it was installed with upstream's *sample*
