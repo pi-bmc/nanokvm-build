@@ -787,16 +787,17 @@ index 00000000000..d968bceb5d0
 +
 +#endif /* __RPI_BOOTSPI_H */
 diff --git a/board/raspberrypi/rpi/rpi.c b/board/raspberrypi/rpi/rpi.c
-index b0a1484c0fa..f91afb77274 100644
+index b0a1484c0fa..9e11c43dded 100644
 --- a/board/raspberrypi/rpi/rpi.c
 +++ b/board/raspberrypi/rpi/rpi.c
-@@ -3,33 +3,47 @@
+@@ -3,33 +3,48 @@
   * (C) Copyright 2012-2016 Stephen Warren
   */
  
 -#define LOG_CATEGORY	LOGC_BOARD
 +#define LOG_CATEGORY LOGC_BOARD
  
++#include <blkinfo.h>
  #include <config.h>
  #include <dm.h>
  #include <env.h>
@@ -839,7 +840,7 @@ index b0a1484c0fa..f91afb77274 100644
  
  DECLARE_GLOBAL_DATA_PTR;
  
-@@ -94,14 +108,14 @@ struct efi_capsule_update_info update_info = {
+@@ -94,14 +109,14 @@ struct efi_capsule_update_info update_info = {
   */
  struct rpi_model {
  	const char *name;
@@ -857,7 +858,7 @@ index b0a1484c0fa..f91afb77274 100644
  
  static const struct rpi_model rpi_model_unknown = {
  	"Unknown model",
-@@ -472,6 +486,160 @@ static void set_serial_number(void)
+@@ -472,6 +487,160 @@ static void set_serial_number(void)
  	env_set("serial#", serial_string);
  }
  
@@ -1018,7 +1019,7 @@ index b0a1484c0fa..f91afb77274 100644
  int misc_init_r(void)
  {
  	set_fdt_addr();
-@@ -481,6 +649,7 @@ int misc_init_r(void)
+@@ -481,6 +650,7 @@ int misc_init_r(void)
  	set_board_info();
  #endif
  	set_serial_number();
@@ -1026,7 +1027,7 @@ index b0a1484c0fa..f91afb77274 100644
  
  	return 0;
  }
-@@ -546,6 +715,10 @@ static void get_board_revision(void)
+@@ -546,6 +716,10 @@ static void get_board_revision(void)
  		model = &models[rev_type];
  	}
  
@@ -1037,7 +1038,7 @@ index b0a1484c0fa..f91afb77274 100644
  	printf("RPI %s (0x%x)\n", model->name, revision);
  }
  
-@@ -591,7 +764,7 @@ int copy_property(void *dst, void *src, char *path, char *property)
+@@ -591,7 +765,7 @@ int copy_property(void *dst, void *src, char *path, char *property)
  }
  
  /* Copy tweaks from the firmware dtb to the loaded dtb */
@@ -1046,7 +1047,7 @@ index b0a1484c0fa..f91afb77274 100644
  {
  	/* Using dtb from firmware directly; leave it alone */
  	if (fdt == fw_fdt)
-@@ -609,8 +782,20 @@ void  update_fdt_from_fw(void *fdt, void *fw_fdt)
+@@ -609,8 +783,20 @@ void  update_fdt_from_fw(void *fdt, void *fw_fdt)
  	/* Adjust dma-ranges for the SD card and PCI bus as they can depend on
  	 * the SoC revision
  	 */
@@ -1069,7 +1070,7 @@ index b0a1484c0fa..f91afb77274 100644
  
  	/* Bootloader configuration template exposes as nvmem */
  	if (copy_property(fdt, fw_fdt, "blconfig", "reg") == 0)
-@@ -625,16 +810,91 @@ void  update_fdt_from_fw(void *fdt, void *fw_fdt)
+@@ -625,16 +811,91 @@ void  update_fdt_from_fw(void *fdt, void *fw_fdt)
  	/* firmware logs - used by the vclog utility */
  	copy_property(fdt, fw_fdt, "/chosen", "log");
  
@@ -1163,7 +1164,7 @@ index b0a1484c0fa..f91afb77274 100644
  int ft_board_setup(void *blob, struct bd_info *bd)
  {
  	int node;
-@@ -644,6 +904,10 @@ int ft_board_setup(void *blob, struct bd_info *bd)
+@@ -644,6 +905,10 @@ int ft_board_setup(void *blob, struct bd_info *bd)
  	else
  		update_fdt_from_fw(blob, (void *)gd->fdt_blob);
  
@@ -1174,7 +1175,7 @@ index b0a1484c0fa..f91afb77274 100644
  	if (CONFIG_IS_ENABLED(FDT_SIMPLEFB)) {
  		node = fdt_node_offset_by_compatible(blob, -1, "simple-framebuffer");
  		if (node < 0)
-@@ -661,11 +925,452 @@ int ft_board_setup(void *blob, struct bd_info *bd)
+@@ -661,11 +926,469 @@ int ft_board_setup(void *blob, struct bd_info *bd)
  	return 0;
  }
  
@@ -1575,6 +1576,23 @@ index b0a1484c0fa..f91afb77274 100644
 +EVENT_SPY_SIMPLE(EVT_POST_PREBOOT, rpi_publish_bootloader_vars_spy);
 +#endif /* EFI_LOADER */
 +
++#if CONFIG_IS_ENABLED(BLKINFO_I2C_STORE)
++/*
++ * Publish the drive inventory preboot's probes found to the BMC's EEPROM
++ * (lib/blkinfo_i2c.c). Same EVT_POST_PREBOOT timing as the bootloader-vars
++ * spy above and for the same reason: "pci enum; nvme scan; usb start" must
++ * have run. Kept separate so the inventory refreshes whenever the drives
++ * change, not gated on the EEPROM update-timestamp.
++ */
++static int rpi_blkinfo_spy(void)
++{
++	/* Best-effort: never fail the boot over unreported inventory. */
++	blkinfo_store_i2c();
++	return 0;
++}
++EVENT_SPY_SIMPLE(EVT_POST_PREBOOT, rpi_blkinfo_spy);
++#endif /* BLKINFO_I2C_STORE */
++
 +int board_late_init(void)
 +{
 +	struct udevice *dev;
@@ -1629,7 +1647,7 @@ index b0a1484c0fa..f91afb77274 100644
  }
  
  static bool is_rpi3(void)
-@@ -681,39 +1386,47 @@ static int acpi_rpi_board_fill_ssdt(struct acpi_ctx *ctx)
+@@ -681,39 +1404,47 @@ static int acpi_rpi_board_fill_ssdt(struct acpi_ctx *ctx)
  	struct {
  		const char *fdt_compatible;
  		const char *acpi_scope;
@@ -1696,7 +1714,7 @@ index b0a1484c0fa..f91afb77274 100644
  				if (ret) {
  					node = -FDT_ERR_NOTFOUND;
  					break;
-@@ -722,11 +1435,15 @@ static int acpi_rpi_board_fill_ssdt(struct acpi_ctx *ctx)
+@@ -722,11 +1453,15 @@ static int acpi_rpi_board_fill_ssdt(struct acpi_ctx *ctx)
  				if (r.start == map[i].mmio_address)
  					break;
  
@@ -1715,7 +1733,7 @@ index b0a1484c0fa..f91afb77274 100644
  		}
  		acpigen_write_scope(ctx, map[i].acpi_scope);
  		acpigen_write_name_integer(ctx, "_STA", enabled ? 0xf : 0);
-@@ -734,34 +1451,38 @@ static int acpi_rpi_board_fill_ssdt(struct acpi_ctx *ctx)
+@@ -734,34 +1469,38 @@ static int acpi_rpi_board_fill_ssdt(struct acpi_ctx *ctx)
  	}
  
  	/* GPIO quirks */
@@ -1762,7 +1780,7 @@ index b0a1484c0fa..f91afb77274 100644
  				acpigen_emit_namestring(ctx, "\\_SB.GDV1.DMTR");
  			acpigen_pop_len(ctx);
  		}
-@@ -771,15 +1492,13 @@ static int acpi_rpi_board_fill_ssdt(struct acpi_ctx *ctx)
+@@ -771,15 +1510,13 @@ static int acpi_rpi_board_fill_ssdt(struct acpi_ctx *ctx)
  	uart_in_use = ~0;
  	mini_clock_rate = 0x1000000;
  
@@ -1782,7 +1800,7 @@ index b0a1484c0fa..f91afb77274 100644
  	if (!ret) {
  		if (uart_in_use == 0)
  			log_err("Invalid config: PL011 and MiniUART are both enabled.");
-@@ -802,7 +1521,8 @@ static int acpi_rpi_board_fill_ssdt(struct acpi_ctx *ctx)
+@@ -802,7 +1539,8 @@ static int acpi_rpi_board_fill_ssdt(struct acpi_ctx *ctx)
  	return 0;
  }
  
@@ -2679,10 +2697,10 @@ index ac331f1c1b0..fe1b5b6bf64 100644
  			iface->desc.bInterfaceSubClass > US_SC_MAX) {
  		debug("Not mass storage\n");
 diff --git a/configs/rpi_arm64_defconfig b/configs/rpi_arm64_defconfig
-index cdcf05ea6db..148e3a4471c 100644
+index cdcf05ea6db..55c0cbd7426 100644
 --- a/configs/rpi_arm64_defconfig
 +++ b/configs/rpi_arm64_defconfig
-@@ -3,37 +3,97 @@ CONFIG_POSITION_INDEPENDENT=y
+@@ -3,37 +3,101 @@ CONFIG_POSITION_INDEPENDENT=y
  CONFIG_ARCH_BCM283X=y
  CONFIG_TARGET_RPI_ARM64=y
  CONFIG_NR_DRAM_BANKS=8
@@ -2749,7 +2767,11 @@ index cdcf05ea6db..148e3a4471c 100644
 +#                   it can never grow into the env region)
 +#   0x4000..0x5fff  U-Boot environment (CONFIG_ENV_OFFSET, CONFIG_ENV_SIZE)
 +#   0x6000..0x67ff  SMBIOS tables      (CONFIG_SMBIOS_I2C_STORE_OFFSET/_SIZE)
-+#   0x6800..0x7fff  spare
++#   0x6800..0x77ff  block inventory    (CONFIG_BLKINFO_I2C_STORE_OFFSET/_SIZE;
++#                   drives found by preboot's "nvme scan; usb start", written
++#                   as JSON by the EVT_POST_PREBOOT spy for the BMC's
++#                   Redfish Storage view — SMBIOS has no disk structure)
++#   0x7800..0x7fff  spare
 +# The env is fixed-size, so it can never creep into the SMBIOS region above it.
 +# The BMC - or the OS via fw_setenv - can read/rewrite these out-of-band;
 +# serial# in the env feeds the SMBIOS system serial (lib/smbios.c reads
@@ -2791,7 +2813,7 @@ index cdcf05ea6db..148e3a4471c 100644
  CONFIG_DM_DMA=y
  CONFIG_DFU_MMC=y
  CONFIG_SYS_DFU_DATA_BUF_SIZE=0x100000
-@@ -47,8 +107,6 @@ CONFIG_BCMGENET=y
+@@ -47,8 +111,6 @@ CONFIG_BCMGENET=y
  CONFIG_PCI_BRCMSTB=y
  CONFIG_PINCTRL=y
  # CONFIG_PINCTRL_GENERIC is not set
@@ -2800,7 +2822,7 @@ index cdcf05ea6db..148e3a4471c 100644
  CONFIG_DM_RNG=y
  CONFIG_RNG_IPROC200=y
  # CONFIG_REQUIRE_SERIAL_CONSOLE is not set
-@@ -60,6 +118,7 @@ CONFIG_USB_XHCI_PCI=y
+@@ -60,6 +122,7 @@ CONFIG_USB_XHCI_PCI=y
  CONFIG_USB_DWC2=y
  CONFIG_USB_KEYBOARD=y
  CONFIG_USB_HOST_ETHER=y
@@ -2808,7 +2830,7 @@ index cdcf05ea6db..148e3a4471c 100644
  CONFIG_USB_ETHER_LAN78XX=y
  CONFIG_USB_ETHER_SMSC95XX=y
  CONFIG_VIDEO=y
-@@ -69,5 +128,85 @@ CONFIG_SYS_WHITE_ON_BLACK=y
+@@ -69,5 +132,86 @@ CONFIG_SYS_WHITE_ON_BLACK=y
  CONFIG_VIDEO_BCM2835=y
  CONFIG_CONSOLE_SCROLL_LINES=10
  CONFIG_PHYS_TO_BUS=y
@@ -2894,6 +2916,7 @@ index cdcf05ea6db..148e3a4471c 100644
 +CONFIG_SMBIOS_I2C_STORE=y
 +CONFIG_SMBIOS_I2C_STORE_OFFSET=0x6000
 +CONFIG_SMBIOS_I2C_STORE_SIZE=0x800
++CONFIG_BLKINFO_I2C_STORE=y
 +CONFIG_LOCALVERSION_AUTO=n
 diff --git a/drivers/clk/Kconfig b/drivers/clk/Kconfig
 index c2da7b3938b..fa4bd11645f 100644
@@ -6218,6 +6241,36 @@ index f4cc2909376..42f67d541d0 100644
  	return env_import(buf_env, 1, H_EXTERNAL);
  }
  
+diff --git a/include/blkinfo.h b/include/blkinfo.h
+new file mode 100644
+index 00000000000..4b0eb8337de
+--- /dev/null
++++ b/include/blkinfo.h
+@@ -0,0 +1,24 @@
++/* SPDX-License-Identifier: GPL-2.0+ */
++/*
++ * Publish the probed block-device inventory to an I2C EEPROM region — see
++ * lib/blkinfo_i2c.c.
++ */
++
++#ifndef __BLKINFO_H
++#define __BLKINFO_H
++
++/**
++ * blkinfo_store_i2c() - write the block-device inventory JSON to the EEPROM
++ *
++ * Serializes every probed block device (interface, vendor, product,
++ * revision, capacity) as a small JSON blob and writes it, behind a
++ * "BLK1" + u16-length header, to CONFIG_BLKINFO_I2C_STORE_OFFSET of the
++ * first UCLASS_I2C_EEPROM device. Return: 0 on success, -ve on error.
++ */
++#if CONFIG_IS_ENABLED(BLKINFO_I2C_STORE)
++int blkinfo_store_i2c(void);
++#else
++static inline int blkinfo_store_i2c(void) { return 0; }
++#endif
++
++#endif /* __BLKINFO_H */
 diff --git a/include/broadcom/bcm_board_types.h b/include/broadcom/bcm_board_types.h
 new file mode 100644
 index 00000000000..3508b40fa9c
@@ -6755,10 +6808,10 @@ index dab23753f0c..c235048d4d6 100644
  /* device request (setup) */
  struct devrequest {
 diff --git a/lib/Kconfig b/lib/Kconfig
-index 9e0f0ad7d06..50fbe44af9c 100644
+index 9e0f0ad7d06..ffdec8e28e2 100644
 --- a/lib/Kconfig
 +++ b/lib/Kconfig
-@@ -1167,6 +1167,39 @@ config GENERATE_SMBIOS_TABLE_VERBOSE
+@@ -1167,6 +1167,74 @@ config GENERATE_SMBIOS_TABLE_VERBOSE
  	help
  	  Provide verbose SMBIOS information.
  
@@ -6795,21 +6848,218 @@ index 9e0f0ad7d06..50fbe44af9c 100644
 +	  bytes in practice; a larger blob is rejected rather than written over
 +	  whatever follows the region.
 +
++config BLKINFO_I2C_STORE
++	bool "Copy the block-device inventory into an I2C EEPROM"
++	depends on BLK && DM_I2C && I2C_EEPROM
++	help
++	  Serialize every probed block device (interface, vendor, product,
++	  firmware revision, capacity) as a small JSON blob and write it to a
++	  region of the first UCLASS_I2C_EEPROM device, so a BMC can report
++	  the host's drives over Redfish while the host is powered off.
++	  SMBIOS defines no structure type for a disk, so this is the storage
++	  sibling of SMBIOS_I2C_STORE.
++
++	  The region starts with a "BLK1" magic and a 16-bit length, so a
++	  reader can validate it. The write is skipped when the EEPROM
++	  already holds identical bytes; a normal boot only pays one read.
++	  The board must call blkinfo_store_i2c() after its storage probes
++	  (e.g. from an EVT_POST_PREBOOT spy).
++
++config BLKINFO_I2C_STORE_OFFSET
++	hex "Offset of the block-inventory region within the EEPROM"
++	depends on BLKINFO_I2C_STORE
++	default 0x6800
++	help
++	  Byte offset of the inventory region. It must not overlap the UEFI
++	  variable store, the environment or the SMBIOS region sharing the
++	  EEPROM.
++
++config BLKINFO_I2C_STORE_SIZE
++	hex "Size of the block-inventory region within the EEPROM"
++	depends on BLKINFO_I2C_STORE
++	default 0x1000
++	help
++	  Bytes reserved for the inventory region (~150 bytes per drive).
++	  Devices that would overflow it are dropped with a warning rather
++	  than written over whatever follows the region.
++
  endmenu
  
  config LIB_RATIONAL
 diff --git a/lib/Makefile b/lib/Makefile
-index d0ffabc2b47..457a2d6028d 100644
+index d0ffabc2b47..e330c9eca71 100644
 --- a/lib/Makefile
 +++ b/lib/Makefile
-@@ -41,6 +41,7 @@ obj-$(CONFIG_GZIP_COMPRESSED) += gzip.o
+@@ -41,6 +41,8 @@ obj-$(CONFIG_GZIP_COMPRESSED) += gzip.o
  # With QEMU the SMBIOS tables come from there, not from U-Boot
  ifndef CONFIG_QFW_SMBIOS
  obj-$(CONFIG_GENERATE_SMBIOS_TABLE) += smbios.o
 +obj-$(CONFIG_SMBIOS_I2C_STORE) += smbios_i2c.o
++obj-$(CONFIG_BLKINFO_I2C_STORE) += blkinfo_i2c.o
  endif
  
  obj-$(CONFIG_SMBIOS_PARSER) += smbios-parser.o
+diff --git a/lib/blkinfo_i2c.c b/lib/blkinfo_i2c.c
+new file mode 100644
+index 00000000000..f0abf749e53
+--- /dev/null
++++ b/lib/blkinfo_i2c.c
+@@ -0,0 +1,155 @@
++// SPDX-License-Identifier: GPL-2.0+
++/*
++ * Publish the probed block-device inventory to a region of an I2C EEPROM.
++ *
++ * The BMC reads the region out-of-band to report the host's drives (vendor,
++ * product, firmware revision, capacity) over Redfish while the host is off
++ * or wedged. SMBIOS (DSP0134) defines no structure type for a disk, so this
++ * small JSON blob is the storage sibling of the SMBIOS region
++ * (lib/smbios_i2c.c), at the next offset of the same shared EEPROM:
++ *
++ *	0x0000..0x3fff  UEFI variable blob (CONFIG_EFI_VARIABLE_I2C_STORE)
++ *	0x4000..0x5fff  U-Boot environment (CONFIG_ENV_IS_IN_EEPROM)
++ *	0x6000..0x67ff  SMBIOS tables      (CONFIG_SMBIOS_I2C_STORE_OFFSET)
++ *	0x6800..        block inventory    (CONFIG_BLKINFO_I2C_STORE_OFFSET)
++ *
++ * Region layout: "BLK1" magic, u16 little-endian JSON length, then JSON:
++ *
++ *	{"v":1,"drives":[{"if":"nvme","dev":0,"vendor":"..","product":"..",
++ *	                  "rev":"..","removable":0,"size":<bytes>}, ...]}
++ *
++ * The caller (the board's EVT_POST_PREBOOT spy) runs after preboot's
++ * "pci enum; nvme scan; usb start", so everything those probes found is
++ * reported even when the boot that follows hangs. Devices the BMC itself
++ * presents over its USB gadget appear too — the blob is the host's honest
++ * view of its bus; the BMC correlates them with its own LUNs.
++ */
++
++#include <blk.h>
++#include <blkinfo.h>
++#include <dm.h>
++#include <i2c_eeprom.h>
++#include <log.h>
++#include <malloc.h>
++#include <string.h>
++
++#define BLKINFO_MAGIC	"BLK1"
++#define BLKINFO_HDR_LEN	6	/* 4-byte magic + u16le JSON length */
++
++/*
++ * Append src to dst as JSON-safe text: printable ASCII with the two JSON
++ * metacharacters blanked, trailing spaces trimmed (ATA/SCSI identify data
++ * is space-padded).
++ */
++static void json_str(char *dst, size_t dstsz, const char *src)
++{
++	size_t n = 0;
++
++	for (; *src && n + 1 < dstsz; src++) {
++		char c = *src;
++
++		if (c < 0x20 || c > 0x7e || c == '"' || c == '\\')
++			c = ' ';
++		dst[n++] = c;
++	}
++	while (n && dst[n - 1] == ' ')
++		n--;
++	dst[n] = '\0';
++}
++
++int blkinfo_store_i2c(void)
++{
++	char vendor[BLK_VEN_SIZE + 1], product[BLK_PRD_SIZE + 1];
++	char revision[BLK_REV_SIZE + 1], entry[192];
++	struct udevice *eeprom, *dev;
++	int count = 0, ret;
++	char *buf, *stored;
++	size_t pos, len;
++
++	/*
++	 * The same device as the UEFI variable store, the environment and the
++	 * SMBIOS tables - one EEPROM, four regions - not a separate DT node.
++	 */
++	ret = uclass_first_device_err(UCLASS_I2C_EEPROM, &eeprom);
++	if (ret) {
++		log_debug("blkinfo: no EEPROM for the inventory: %d\n", ret);
++		return ret;
++	}
++
++	buf = malloc(CONFIG_BLKINFO_I2C_STORE_SIZE);
++	if (!buf)
++		return -ENOMEM;
++
++	pos = BLKINFO_HDR_LEN;
++	pos += snprintf(buf + pos, CONFIG_BLKINFO_I2C_STORE_SIZE - pos,
++			"{\"v\":1,\"drives\":[");
++
++	blk_foreach_probe(BLKF_BOTH, dev) {
++		struct blk_desc *desc = dev_get_uclass_plat(dev);
++		int n;
++
++		json_str(vendor, sizeof(vendor), desc->vendor);
++		json_str(product, sizeof(product), desc->product);
++		json_str(revision, sizeof(revision), desc->revision);
++
++		n = snprintf(entry, sizeof(entry),
++			     "%s{\"if\":\"%s\",\"dev\":%d,\"vendor\":\"%s\","
++			     "\"product\":\"%s\",\"rev\":\"%s\","
++			     "\"removable\":%d,\"size\":%llu}",
++			     count ? "," : "",
++			     blk_get_uclass_name(desc->uclass_id),
++			     desc->devnum, vendor, product, revision,
++			     desc->removable ? 1 : 0,
++			     (unsigned long long)desc->lba * desc->blksz);
++		/* +2 keeps room for the closing "]}". */
++		if (n < 0 ||
++		    pos + n + 2 >= CONFIG_BLKINFO_I2C_STORE_SIZE) {
++			log_warning("blkinfo: region full, %s%d dropped\n",
++				    blk_get_uclass_name(desc->uclass_id),
++				    desc->devnum);
++			continue;
++		}
++		memcpy(buf + pos, entry, n);
++		pos += n;
++		count++;
++	}
++	pos += snprintf(buf + pos, CONFIG_BLKINFO_I2C_STORE_SIZE - pos, "]}");
++
++	len = pos - BLKINFO_HDR_LEN;
++	memcpy(buf, BLKINFO_MAGIC, 4);
++	buf[4] = len & 0xff;
++	buf[5] = (len >> 8) & 0xff;
++
++	/*
++	 * Skip the write when the EEPROM already holds these exact bytes: the
++	 * inventory only changes when a drive does, while i2c_eeprom_write()
++	 * sleeps 10ms per page - the common boot costs one read.
++	 */
++	stored = malloc(pos);
++	if (stored) {
++		bool same = !i2c_eeprom_read(eeprom,
++					     CONFIG_BLKINFO_I2C_STORE_OFFSET,
++					     stored, pos) &&
++			    !memcmp(stored, buf, pos);
++
++		free(stored);
++		if (same) {
++			log_debug("blkinfo: EEPROM is up to date\n");
++			free(buf);
++			return 0;
++		}
++	}
++
++	ret = i2c_eeprom_write(eeprom, CONFIG_BLKINFO_I2C_STORE_OFFSET, buf,
++			       pos);
++	free(buf);
++	if (ret) {
++		log_err("blkinfo: EEPROM write failed: %d\n", ret);
++		return ret;
++	}
++
++	log_debug("blkinfo: wrote %d drive(s), %zu bytes at offset %#x\n",
++		  count, pos, (uint)CONFIG_BLKINFO_I2C_STORE_OFFSET);
++
++	return 0;
++}
 diff --git a/lib/efi_loader/Kconfig b/lib/efi_loader/Kconfig
 index 4cb13ae7c8a..ee192748242 100644
 --- a/lib/efi_loader/Kconfig
