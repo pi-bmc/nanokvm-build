@@ -4708,7 +4708,7 @@ index 002d5bd31b2..258eb9a635b 100644
  #define GEM_RX_CSUM_CHECKED_MASK		2
  #define gem_writel_queue_TBQP(port, value, queue_num)	\
 diff --git a/drivers/nvme/nvme.c b/drivers/nvme/nvme.c
-index 147a104149e..cb947904c60 100644
+index 147a104149e..ab11dda117e 100644
 --- a/drivers/nvme/nvme.c
 +++ b/drivers/nvme/nvme.c
 @@ -62,14 +62,14 @@ static int nvme_wait_csts(struct nvme_dev *dev, u32 mask, u32 val)
@@ -4971,7 +4971,24 @@ index 147a104149e..cb947904c60 100644
  		free(id);
  		return -EIO;
  	}
-@@ -769,7 +772,7 @@ static ulong nvme_blk_rw(struct udevice *udev, lbaint_t blknr,
+@@ -750,7 +753,15 @@ static int nvme_blk_probe(struct udevice *udev)
+ 	desc->log2blksz = ns->lba_shift;
+ 	desc->blksz = 1 << ns->lba_shift;
+ 	desc->bdev = udev;
+-	memcpy(desc->vendor, ndev->vendor, sizeof(ndev->vendor));
++	/*
++	 * Carry the Identify controller model name (MN) in the vendor field:
++	 * it is the string a user knows the drive by, it fits BLK_VEN_SIZE
++	 * exactly, and the 8-byte PCI vendor it displaces carries no
++	 * information the model name lacks. product stays the serial (SN),
++	 * matching 'nvme detail' and the blkinfo EEPROM inventory consumers.
++	 */
++	memcpy(desc->vendor, ndev->model, sizeof(ndev->model));
++	desc->vendor[sizeof(ndev->model)] = '\0';
+ 	memcpy(desc->product, ndev->serial, sizeof(ndev->serial));
+ 	memcpy(desc->revision, ndev->firmware_rev, sizeof(ndev->firmware_rev));
+ 
+@@ -769,7 +780,7 @@ static ulong nvme_blk_rw(struct udevice *udev, lbaint_t blknr,
  	u64 prp2;
  	u64 total_len = blkcnt << desc->log2blksz;
  	u64 temp_len = total_len;
@@ -4980,7 +4997,7 @@ index 147a104149e..cb947904c60 100644
  
  	u64 slba = blknr;
  	u16 lbas = 1 << (dev->max_transfer_shift - ns->lba_shift);
-@@ -802,7 +805,7 @@ static ulong nvme_blk_rw(struct udevice *udev, lbaint_t blknr,
+@@ -802,7 +813,7 @@ static ulong nvme_blk_rw(struct udevice *udev, lbaint_t blknr,
  		c.rw.slba = cpu_to_le64(slba);
  		slba += lbas;
  		c.rw.length = cpu_to_le16(lbas - 1);
@@ -4989,7 +5006,7 @@ index 147a104149e..cb947904c60 100644
  		c.rw.prp2 = cpu_to_le64(prp2);
  		status = nvme_submit_sync_cmd(dev->queues[NVME_IO_Q],
  				&c, NULL, IO_TIMEOUT);
-@@ -882,14 +885,14 @@ int nvme_init(struct udevice *udev)
+@@ -882,14 +893,14 @@ int nvme_init(struct udevice *udev)
  	if (!ndev->prp_pool) {
  		ret = -ENOMEM;
  		printf("Error: %s: Out of memory!\n", udev->name);
@@ -5006,7 +5023,7 @@ index 147a104149e..cb947904c60 100644
  	}
  
  	nvme_get_info_from_identify(ndev);
-@@ -899,7 +902,7 @@ int nvme_init(struct udevice *udev)
+@@ -899,7 +910,7 @@ int nvme_init(struct udevice *udev)
  	id = memalign(ndev->page_size, sizeof(struct nvme_id_ns));
  	if (!id) {
  		ret = -ENOMEM;
@@ -5015,7 +5032,7 @@ index 147a104149e..cb947904c60 100644
  	}
  
  	for (int i = 1; i <= ndev->nn; i++) {
-@@ -907,7 +910,7 @@ int nvme_init(struct udevice *udev)
+@@ -907,7 +918,7 @@ int nvme_init(struct udevice *udev)
  		char name[20];
  
  		memset(id, 0, sizeof(*id));
@@ -5024,7 +5041,7 @@ index 147a104149e..cb947904c60 100644
  			ret = -EIO;
  			goto free_id;
  		}
-@@ -944,8 +947,6 @@ int nvme_init(struct udevice *udev)
+@@ -944,8 +955,6 @@ int nvme_init(struct udevice *udev)
  
  free_id:
  	free(id);
