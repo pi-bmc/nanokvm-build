@@ -1,3 +1,12 @@
+U-Boot support for the Pi BMC boot image: RPi 4/5 board glue, RP1 drivers
+(clk, gpio, pinctrl, mfd, ethernet), SPI boot-EEPROM tooling, SMBIOS/sysinfo
+wiring and the rpi_arm64 defconfig built as the kernel8.img payload.
+
+Regenerated against U-Boot v2026.07 from the local u-boot fork's
+feat/v2026.07/uefi-bootmgr working tree (git diff v2026.07..worktree).
+
+Upstream-Status: Inappropriate [downstream boot-image configuration]
+
 diff --git a/arch/arm/dts/Makefile b/arch/arm/dts/Makefile
 index 2b65cd9105c..be92d7c1be1 100644
 --- a/arch/arm/dts/Makefile
