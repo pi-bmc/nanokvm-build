@@ -38,4 +38,12 @@ dtoverlay=dwc2,dr_mode=host
 
 [pi5]
 usb_max_current_enable=1
-enable_uart=0
+# The BMC captures this UART (its ttyS1). enable_uart=1 makes the firmware
+# initialize the header UART and fix up its clock in the DTB; without it the
+# v2026.07 U-Boot divides 115200 against an unprogrammed reference and
+# transmits a few percent off -- garbled console from the first byte.
+# init_uart_clock pins the reference so a core-clock change can never skew
+# the baud. (The old "enable_uart=0 for U-Boot compatibility" workaround
+# predates the v2026.07 port.)
+enable_uart=1
+init_uart_clock=48000000
