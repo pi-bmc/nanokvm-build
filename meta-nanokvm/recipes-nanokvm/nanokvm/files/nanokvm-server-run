@@ -1,0 +1,46 @@
+#!/bin/sh
+# NanoKVM server launcher, run by busybox init via an inittab ::respawn
+# entry (replaces the S95nanokvm start-stop-daemon script).
+#
+# Every (re)start walks the newest-runnable-install cascade:
+#
+#   /var/lib/nanokvm/app        current self-update (persistent data partition)
+#   /var/lib/nanokvm/app.prev   previous install (rollback after a bad update)
+#   /kvmapp                     factory copy baked into the squashfs image
+#
+# The cascade is what makes self-updates power-cut-safe: the updater installs
+# into a fresh app dir with dir-rename swaps (server/service/application), so
+# an interrupted update leaves app.prev (or the factory copy) runnable and the
+# next start silently falls back. The server restarts itself (TLS change, app
+# update) simply by exiting -- init respawns this launcher, which then picks
+# up the newly installed tree. ActiveAppDir() in
+# server/service/application/service.go mirrors this walk; keep them in sync.
+#
+# busybox init does not throttle respawn loops (its own docs say so), so a
+# crash-looping server is throttled here instead: an exit within CRASH_SECS
+# of launch sleeps CRASH_SLEEP before init's next attempt. Healthy restarts
+# pay nothing.
+
+DAEMON=NanoKVM-Server
+CRASH_SECS=10
+CRASH_SLEEP=5
+
+started=$(cut -d. -f1 /proc/uptime)
+
+for dir in /var/lib/nanokvm/app /var/lib/nanokvm/app.prev /kvmapp; do
+    [ -x "${dir}/server/${DAEMON}" ] || continue
+    [ "${dir}" = /var/lib/nanokvm/app ] || echo "${0##*/}: running from ${dir}" >&2
+    "${dir}/server/${DAEMON}"
+    ended=$(cut -d. -f1 /proc/uptime)
+    if [ $((ended - started)) -lt ${CRASH_SECS} ]; then
+        echo "${0##*/}: ${DAEMON} exited after $((ended - started))s; throttling" >&2
+        sleep ${CRASH_SLEEP}
+    fi
+    exit 0
+done
+
+# Nothing runnable anywhere, not even the factory copy: squashfs damage or a
+# mid-flash card. Pause so init's unthrottled respawn cannot spin.
+echo "${0##*/}: no runnable ${DAEMON} install" >&2
+sleep 30
+exit 1

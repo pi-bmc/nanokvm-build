@@ -42,6 +42,12 @@ rescue() {
     reboot -f
 }
 
+# The cpio ships no mountpoint directories (PACKAGE_INSTALL carries no
+# base-files); without this mkdir the proc/sys mounts fail, the move-mounts
+# below fail after them, and the real system's fstab configfs/debugfs mounts
+# then fail against an empty /sys. /dev alone survived that: the kernel
+# (>=6.8) creates and automounts devtmpfs itself.
+mkdir -p /proc /sys /dev
 grep -q ' /proc proc' /proc/mounts 2>/dev/null || mount -t proc proc /proc
 grep -q ' /sys sysfs' /proc/mounts || mount -t sysfs sysfs /sys
 grep -q ' /dev devtmpfs' /proc/mounts || mount -t devtmpfs devtmpfs /dev

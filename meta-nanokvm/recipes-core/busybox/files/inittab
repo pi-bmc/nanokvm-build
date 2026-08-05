@@ -20,14 +20,24 @@ null::sysinit:/bin/ln -sf /proc/self/fd/1 /dev/stdout
 null::sysinit:/bin/ln -sf /proc/self/fd/2 /dev/stderr
 null::sysinit:/bin/busybox hostname -F /etc/hostname
 
-# busybox's rcS runner: walks /etc/rcS.d then /etc/rc5.d — S05zram-swap,
-# S06nanokvm-data, S95nanokvm.
+# busybox's rcS runner: walks /etc/rcS.d then /etc/rc5.d — S05zram-swap is
+# the only script left (the server is inittab-supervised below, and the old
+# S06nanokvm-data firmware seeding moved into the server itself).
 ::sysinit:/etc/init.d/rcS
 
-# Reboot/poweroff: rcK walks /etc/rc6.d (K95nanokvm stops the server, which
-# syncs its state on SIGTERM), then release swap and storage. umount -r
-# falls back to a read-only remount when a filesystem is still busy.
-::shutdown:/etc/init.d/rcK
+# The NanoKVM server, supervised: init restarts the launcher whenever the
+# server exits (crash, self-update, TLS change). The launcher re-walks the
+# app -> app.prev -> /kvmapp cascade on each start and throttles crash
+# loops itself — busybox init's respawn does not.
+::respawn:/usr/sbin/nanokvm-server-run
+
+# Reboot/poweroff: stop the server first (it syncs its state on SIGTERM;
+# respawn entries are not restarted during shutdown), give it a moment,
+# then release swap and storage. umount -r falls back to a read-only
+# remount when a filesystem is still busy. There is no rcK/rc6.d walk any
+# more — the server was its only member.
+::shutdown:/usr/bin/killall NanoKVM-Server
+::shutdown:/usr/bin/sleep 2
 ::shutdown:/sbin/swapoff -a
 ::shutdown:/bin/umount -a -r
 

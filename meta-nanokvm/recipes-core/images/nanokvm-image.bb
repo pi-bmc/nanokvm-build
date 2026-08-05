@@ -192,20 +192,21 @@ IMAGE_INSTALL:append = " \
 # i2c-eeprom is gone: the board DTS declares both the i2c1 pinmux and the
 # eeprom@50 slave node, so the kernel binds i2c-slave-eeprom at boot and the
 # init script's only remaining effect was to re-apply a pinmux pinctrl had
-# already set.
+# already set. nanokvm-gadget is deploy-only now (boot-partition files via
+# do_image_wic below) -- its first-boot seeding script moved into the server.
 IMAGE_INSTALL:append = " \
     nanokvm-server \
-    nanokvm-gadget \
     "
 
 # --- Raspberry Pi boot image (served to the managed Pi via the USB gadget) ---
 # rpi-firmware-seed carries the aarch64 U-Boot image built by the "rpi"
-# multiconfig (the vendored meta-raspberrypi layer) into the rootfs, gzip-compressed;
-# the nanokvm-data init script decompresses it to
-# /var/lib/nanokvm/firmware/uboot-rpi.img (persistent data partition) on first
-# boot. This is what pulls the whole rpi multiconfig into a `kas build kas.yml`
-# -- the aarch64 TF-A/U-Boot/RPi-overlay build and the crane-based talos-dtbs
-# fetch run as a side effect of building this image.
+# multiconfig (the vendored meta-raspberrypi layer) into the rootfs as-is
+# (.wic.xz); the server (server/service/firmware, Firmware.SeedPath)
+# decompresses it to /var/lib/nanokvm/firmware/uboot-rpi.img (persistent data
+# partition) whenever that image is absent. This is what pulls the whole rpi
+# multiconfig into a `kas build kas.yml` -- the aarch64 TF-A/U-Boot/RPi-overlay
+# build and the crane-based talos-dtbs fetch run as a side effect of building
+# this image.
 IMAGE_INSTALL:append = " \
     rpi-firmware-seed \
     "

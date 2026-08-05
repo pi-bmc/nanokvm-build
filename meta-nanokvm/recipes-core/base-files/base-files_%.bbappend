@@ -2,7 +2,8 @@
 #
 # The NanoKVM server (server/service/usbgadget) now owns the USB gadget: it
 # assembles it under configfs at startup and reads its config from /boot, so
-# both mounts must be present before the server runs (rc5 S95nanokvm):
+# both mounts must be present before the server runs (inittab ::respawn
+# entries start only after the ::sysinit `mount -a` completes):
 #
 #   /boot               the server reads /boot/ver and, on first boot only,
 #                       the legacy migration flags /boot/usb.ecm0, usb.vid, ...

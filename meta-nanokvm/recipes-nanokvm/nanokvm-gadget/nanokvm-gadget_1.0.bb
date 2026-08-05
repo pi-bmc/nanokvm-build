@@ -1,19 +1,16 @@
-SUMMARY = "NanoKVM data-partition seeding and boot-partition config files"
-DESCRIPTION = "Seeds the persistent data partition (/var/lib/nanokvm, mounted \
-by the initramfs) with the Raspberry Pi boot image on first boot, and deploys \
-the boot-partition config files the NanoKVM server and initramfs read at \
-runtime (board, hostname.prefix, ver, usb.ecm0, slot, extlinux.conf). The \
-disk provisioning that used to live here (S01fs partition dance) moved into \
-the initramfs (nanokvm-initramfs), which owns the disk before the root is \
-mounted. The USB device gadget is not built here either: the server \
-(server/service/usbgadget) owns the gadget configfs and assembles it at \
-startup. usb.ecm0 is read once by the server's first-boot migration to seed \
-the default ECM network function."
+SUMMARY = "NanoKVM boot-partition config files (deploy-only)"
+DESCRIPTION = "Deploys the boot-partition config files the NanoKVM server and \
+initramfs read at runtime (board, hostname.prefix, ver, usb.ecm0, slot, \
+extlinux.conf). Installs nothing into the rootfs: the disk provisioning that \
+once lived here (S01fs) is in the initramfs, the first-boot firmware seeding \
+(S06nanokvm-data) is in the server (server/service/firmware seeds from \
+rpi-firmware-seed's baked-in .xz), and the server also owns the USB gadget \
+configfs (server/service/usbgadget). usb.ecm0 is read once by the server's \
+first-boot migration to seed the default ECM network function."
 LICENSE = "GPL-3.0-only"
 LIC_FILES_CHKSUM = "file://${COMMON_LICENSE_DIR}/GPL-3.0-only;md5=c79ff39f19dfec6d293b95dea7b07891"
 
 SRC_URI = " \
-    file://nanokvm-data \
     file://board \
     file://extlinux.conf \
     file://hostname.prefix \
@@ -22,18 +19,7 @@ SRC_URI = " \
 "
 S = "${WORKDIR}"
 
-inherit deploy update-rc.d
-
-# S06 in rc5: after zram (S05, rcS), before the server (S95) that reads the
-# seeded firmware image. Same registration mechanism as the sibling recipes
-# (zram-swap, nanokvm-server) instead of a hand-rolled rc5.d symlink.
-INITSCRIPT_NAME = "nanokvm-data"
-INITSCRIPT_PARAMS = "start 06 5 ."
-
-do_install() {
-    install -d ${D}${sysconfdir}/init.d
-    install -m 0755 ${WORKDIR}/nanokvm-data ${D}${sysconfdir}/init.d/nanokvm-data
-}
+inherit deploy nopackages
 
 # The config files live on the FAT boot partition (read at runtime from /boot
 # by the server, and "slot" by the initramfs for rootfs A/B selection), so
@@ -49,8 +35,3 @@ do_deploy() {
 # deploy.bbclass sets up the sstate/deploydir machinery but does not register
 # the task itself; the recipe must add it to the build graph.
 addtask deploy after do_install before do_build
-
-FILES:${PN} = " \
-    ${sysconfdir}/init.d/nanokvm-data \
-    ${sysconfdir}/rc5.d/S06nanokvm-data \
-"

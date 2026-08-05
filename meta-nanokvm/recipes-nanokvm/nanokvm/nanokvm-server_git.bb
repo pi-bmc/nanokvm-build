@@ -3,14 +3,14 @@ HOMEPAGE = "https://github.com/pi-bmc/nanokvm-app"
 LICENSE = "GPL-3.0-only"
 LIC_FILES_CHKSUM = "file://src/${GO_IMPORT}/LICENSE;md5=1ebbd3e34237af26da5dc08a4e440464"
 
-inherit go-mod go update-rc.d
+inherit go-mod go
 
 # NB: the GitHub repo is pi-bmc/nanokvm-app, but the Go module path (go.mod) is
 # github.com/BMCPi/NanoKVM -- GO_IMPORT must match the module path, not the URL.
 GO_IMPORT = "github.com/BMCPi/NanoKVM"
 SRCREV = "${AUTOREV}"
 SRC_URI = "git://github.com/pi-bmc/nanokvm-app;branch=main;protocol=https \
-           file://nanokvm.init"
+           file://nanokvm-server-run"
 
 S = "${WORKDIR}/git"
 
@@ -79,29 +79,16 @@ do_install() {
     install -d ${D}${KVMAPP_DIR}/server
     install -m 0755 ${B}/NanoKVM-Server ${D}${KVMAPP_DIR}/server/NanoKVM-Server
 
-    # Service init script (start/stop/status via start-stop-daemon), registered
-    # through oe-core sysvinit/update-rc.d. We ship our own instead of the app's
-    # packaging/etc/init.d/S95nanokvm because the upstream one uses Debian-only
-    # start-stop-daemon options (-O logfile, -d chdir) that BusyBox rejects, so
-    # the daemon never launches on this image. See files/nanokvm.init.
-    install -d ${D}${sysconfdir}/init.d
-    install -m 0755 ${WORKDIR}/nanokvm.init \
-        ${D}${sysconfdir}/init.d/nanokvm
-
-    # Compat name. The server restarts itself by shelling out to the literal
-    # path "/etc/init.d/S95nanokvm restart" -- server/service/vm/tls.go,
-    # service/application/update.go (x2) and update_offline.go. update-rc.d
-    # names the script "nanokvm" and puts the S95 prefix only on the rc?.d
-    # symlinks, so that path did not exist and every self-restart (after a TLS
-    # cert change or an app upgrade) silently did nothing.
-    ln -sf nanokvm ${D}${sysconfdir}/init.d/S95nanokvm
+    # The launcher busybox init runs under its inittab ::respawn entry (see
+    # the busybox inittab in recipes-core/busybox/files). It walks the
+    # app -> app.prev -> /kvmapp cascade on every (re)start and throttles
+    # crash loops; the server restarts itself by simply exiting
+    # (server/service/application RestartService). This replaced the sysv
+    # init script + start-stop-daemon + pidfile machinery -- supervision now
+    # lives where init already supervises the getty.
+    install -d ${D}${sbindir}
+    install -m 0755 ${WORKDIR}/nanokvm-server-run ${D}${sbindir}/nanokvm-server-run
 }
-
-INITSCRIPT_NAME = "nanokvm"
-# busybox init's rcS/rcK runners only ever walk rcS.d + rc5.d (boot) and
-# rc6.d (shutdown), so register exactly those instead of "defaults 95"
-# (which would scatter dead links across rc0.d-rc4.d).
-INITSCRIPT_PARAMS = "start 95 5 . stop 95 6 ."
 
 # The server's network service (server/service/network) shells out to `nft`
 # for the usb0 forward-path guard; it degrades gracefully when the binary is
@@ -115,6 +102,5 @@ INSANE_SKIP:${PN} += "ldflags already-stripped"
 
 FILES:${PN} = " \
     ${KVMAPP_DIR} \
-    ${sysconfdir}/init.d/nanokvm \
-    ${sysconfdir}/init.d/S95nanokvm \
+    ${sbindir}/nanokvm-server-run \
     "

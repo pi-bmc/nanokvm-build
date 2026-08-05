@@ -20,8 +20,8 @@ do_install() {
 }
 
 INITSCRIPT_NAME = "zram-swap"
-# Early in rcS, right after mountall (S03): swap should exist before the
-# memory-hungry services (the Go server at rc5 S95) come up.
+# Early in rcS: swap should exist before the memory-hungry Go server, whose
+# inittab ::respawn entry starts once ::sysinit (including rcS) completes.
 INITSCRIPT_PARAMS = "start 05 S ."
 
 FILES:${PN} = "${sysconfdir}/init.d/zram-swap"
