@@ -11,10 +11,14 @@
 #                        image update writes a new squashfs here and flips
 #                        /boot/slot; the initramfs falls back to the other
 #                        slot when the selected one does not mount.
-#   p4:                - NOT in this layout: the ext4 data partition
-#                        (/var/lib/nanokvm) is created by the initramfs on
-#                        first boot from all remaining space, so it always
-#                        fills whatever card the image is flashed to.
+#   p4: 640 MB         - ext4 data partition (/var/lib/nanokvm), shipped
+#                        pre-populated with its factory content: the Pi boot
+#                        image at firmware/uboot-rpi.img (staged into
+#                        DEPLOY_DIR_IMAGE/nkvm-data-root by rpi-firmware-seed).
+#                        The initramfs grows the partition to fill the card and
+#                        resize2fs's it online on first boot -- nothing is
+#                        copied or formatted at runtime, so the gadget's boot
+#                        image is available from the first second.
 #
 # This is a .wks.in template: ${...} bitbake variables are expanded before
 # wic runs. rawcopy accepts the absolute IMGDEPLOYDIR path; the squashfs-zst
@@ -35,3 +39,8 @@ part /boot --source bootimg-partition --ondisk mmcblk0 --fstype msdos --label BO
 # default's 0xc).
 part --source rawcopy --sourceparams="file=${IMGDEPLOYDIR}/${IMAGE_LINK_NAME}.squashfs-zst" --ondisk mmcblk0 --fstype ext4 --align 1024 --fixed-size 524288K
 part --ondisk mmcblk0 --fstype ext4 --label rootfsB --align 1024 --fixed-size 524288K
+# 640M initial size: the 513M boot image + ext4 metadata + headroom. The
+# partition entry and filesystem are grown to the full card by the initramfs
+# on first boot (sfdisk + online resize2fs), so this size only decides how
+# many bytes a flash writes.
+part --source rootfs --rootfs-dir=${DEPLOY_DIR_IMAGE}/nkvm-data-root --ondisk mmcblk0 --fstype ext4 --label nkvm-data --align 1024 --fixed-size 640M

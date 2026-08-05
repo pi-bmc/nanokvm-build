@@ -199,17 +199,18 @@ IMAGE_INSTALL:append = " \
     "
 
 # --- Raspberry Pi boot image (served to the managed Pi via the USB gadget) ---
-# rpi-firmware-seed carries the aarch64 U-Boot image built by the "rpi"
-# multiconfig (the vendored meta-raspberrypi layer) into the rootfs as-is
-# (.wic.xz); the server (server/service/firmware, Firmware.SeedPath)
-# decompresses it to /var/lib/nanokvm/firmware/uboot-rpi.img (persistent data
-# partition) whenever that image is absent. This is what pulls the whole rpi
-# multiconfig into a `kas build kas.yml` -- the aarch64 TF-A/U-Boot/RPi-overlay
-# build and the crane-based talos-dtbs fetch run as a side effect of building
-# this image.
-IMAGE_INSTALL:append = " \
-    rpi-firmware-seed \
-    "
+# rpi-firmware-seed stages the aarch64 U-Boot image built by the "rpi"
+# multiconfig (the vendored meta-raspberrypi layer) into
+# DEPLOY_DIR_IMAGE/nkvm-data-root, which wic packs into the data partition
+# (p4) as its factory content -- see wic/nanokvm-sd.wks.in. Nothing ships in
+# the rootfs and nothing is copied or decompressed at runtime: a flashed card
+# already holds /var/lib/nanokvm/firmware/uboot-rpi.img, and the server
+# (Firmware.SeedPath fallback, then download) only rebuilds it if the data
+# partition is ever lost. The do_image_wic dependency below is what pulls the
+# whole rpi multiconfig into a `kas build kas.yml` -- the aarch64
+# TF-A/U-Boot/RPi-overlay build and the crane-based talos-dtbs fetch run as a
+# side effect of building this image.
+do_image_wic[depends] += "rpi-firmware-seed:do_deploy"
 
 # --- SD card image via WKS ---
 # (No IMAGE_ROOTFS_SIZE: squashfs is content-sized; the wks pins the slot

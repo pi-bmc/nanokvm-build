@@ -65,12 +65,27 @@ while [ ! -b ${DISK}p2 ]; do
     sleep 1
 done
 
-# --- 2. first boot: create the data partition ------------------------------
-# Done before anything is mounted: BLKRRPART (kernel partition-table re-read)
-# fails with EBUSY once any partition on the disk is mounted.
-if [ ! -b ${DATA_PART} ]; then
-    msg "first boot: creating data partition ${DATA_PART}"
-    # Append a fourth primary partition using all remaining space.
+# --- 2. first boot: grow the data partition to fill the card ---------------
+# The flashed image ships p4 pre-populated (factory Pi boot image inside; see
+# wic/nanokvm-sd.wks.in) at its minimum size. Grow the partition entry here,
+# before anything is mounted: BLKRRPART (kernel partition-table re-read)
+# fails with EBUSY once any partition on the disk is mounted. The filesystem
+# itself is grown online after the mount in step 4, so a power cut between
+# the two steps self-heals on the next boot.
+if [ -b ${DATA_PART} ]; then
+    disk=$(cat /sys/block/${DISK##*/}/size)
+    p4s=$(cat /sys/block/${DISK##*/}/${DATA_PART##*/}/start)
+    p4z=$(cat /sys/block/${DISK##*/}/${DATA_PART##*/}/size)
+    # More than 8 MiB (16384 sectors) of unclaimed tail = not yet grown.
+    if [ $((disk - p4s - p4z)) -gt 16384 ]; then
+        msg "first boot: growing ${DATA_PART} to fill the card"
+        echo ', +' | sfdisk --quiet -N 4 ${DISK} || msg "sfdisk grow failed"
+    fi
+else
+    # A card without p4 (wiped table, or an image predating the pre-populated
+    # layout): recreate it empty from all remaining space. The server notices
+    # the missing boot image and rebuilds it (seed, else download).
+    msg "no data partition: creating ${DATA_PART}"
     echo ',,83' | sfdisk --append --quiet ${DISK} || msg "sfdisk failed"
     tries=0
     while [ ! -b ${DATA_PART} ] && [ $tries -lt 10 ]; do
@@ -131,7 +146,13 @@ if [ -b ${DATA_PART} ]; then
         msg "data partition dirty (e2fsck rc=$rc), retrying with -y"
         e2fsck -y ${DATA_PART} >/dev/null 2>&1
     fi
-    if ! mount -t ext4 -o noatime ${DATA_PART} /mnt/root/var/lib/nanokvm; then
+    if mount -t ext4 -o noatime ${DATA_PART} /mnt/root/var/lib/nanokvm; then
+        # Grow the filesystem to the (possibly just-grown) partition. Online
+        # ext4 resize needs no prior fsck and is journaled; when the size
+        # already matches this is a sub-second no-op, which also self-heals a
+        # power cut that landed between the sfdisk grow and here.
+        resize2fs ${DATA_PART} >/dev/null 2>&1 || msg "resize2fs failed"
+    else
         msg "data partition unmountable; using tmpfs (NO persistence)"
         mount -t tmpfs tmpfs /mnt/root/var/lib/nanokvm
     fi

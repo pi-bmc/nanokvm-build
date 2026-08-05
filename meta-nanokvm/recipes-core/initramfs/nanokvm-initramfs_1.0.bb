@@ -13,8 +13,9 @@ S = "${WORKDIR}"
 
 # Tools /init actually invokes; busybox provides the rest (sh, mount,
 # switch_root, sfdisk is NOT busybox's -- the util-linux one understands
-# --append and script input).
-RDEPENDS:${PN} = "busybox util-linux-sfdisk e2fsprogs-e2fsck e2fsprogs-mke2fs"
+# --append, -N resize and script input). resize2fs grows the pre-populated
+# data partition's filesystem online on first boot.
+RDEPENDS:${PN} = "busybox util-linux-sfdisk e2fsprogs-e2fsck e2fsprogs-mke2fs e2fsprogs-resize2fs"
 
 do_install() {
     install -m 0755 ${WORKDIR}/init ${D}/init
