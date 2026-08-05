@@ -1,0 +1,38 @@
+# NanoKVM inittab for busybox init (PID 1 after the initramfs switch_root).
+#
+# Deliberately smaller than poky's stock busybox inittab: the initramfs has
+# already mounted proc, sysfs and devtmpfs and moved them into this root, and
+# the squashfs+tmpfs-overlay root is born writable — so the stock preamble
+# (mount /proc, /sys, /dev; remount rw /) has nothing left to do here.
+
+# /dev/pts and everything in fstab: /run, /var/volatile, /boot, configfs,
+# debugfs, and the /etc/kvm bind onto the data partition.
+::sysinit:/bin/mkdir -p /dev/pts
+::sysinit:/bin/mount -a
+
+# The volatile skeleton populate-volatile.sh used to build (initscripts is
+# not installed). /var/log and /var/tmp are image symlinks into /var/volatile.
+null::sysinit:/bin/mkdir -p /var/volatile/log /var/volatile/tmp /run/lock
+
+null::sysinit:/bin/ln -sf /proc/self/fd /dev/fd
+null::sysinit:/bin/ln -sf /proc/self/fd/0 /dev/stdin
+null::sysinit:/bin/ln -sf /proc/self/fd/1 /dev/stdout
+null::sysinit:/bin/ln -sf /proc/self/fd/2 /dev/stderr
+null::sysinit:/bin/busybox hostname -F /etc/hostname
+
+# busybox's rcS runner: walks /etc/rcS.d then /etc/rc5.d — S05zram-swap,
+# S06nanokvm-data, S95nanokvm.
+::sysinit:/etc/init.d/rcS
+
+# Reboot/poweroff: rcK walks /etc/rc6.d (K95nanokvm stops the server, which
+# syncs its state on SIGTERM), then release swap and storage. umount -r
+# falls back to a read-only remount when a filesystem is still busy.
+::shutdown:/etc/init.d/rcK
+::shutdown:/sbin/swapoff -a
+::shutdown:/bin/umount -a -r
+
+# Stuff to do when restarting the init process
+::restart:/sbin/init
+
+# A serial getty per SERIAL_CONSOLES (ttyS0) is appended below by the
+# busybox-inittab recipe.

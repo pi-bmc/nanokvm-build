@@ -1,5 +1,5 @@
 #!/bin/sh
-# NanoKVM initramfs: assemble the real root and hand off to sysvinit.
+# NanoKVM initramfs: assemble the real root and hand off to busybox init.
 #
 # Boot flow (SD layout: see wic/nanokvm-sd.wks.in):
 #   1. Wait for the SD card (the kernel does not wait for us; this replaces

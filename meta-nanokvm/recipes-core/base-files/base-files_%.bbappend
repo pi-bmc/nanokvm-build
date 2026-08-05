@@ -10,11 +10,12 @@
 #                       (the server mounts configfs itself as a fallback, but
 #                       having it in fstab brings it up once, early)
 #
-# Doing them from fstab (rcS S03mountall.sh) instead of S01fs's old rc5.d/S06
-# entry keeps them independent of the first-boot partition dance and available
-# to everything from early boot on. (Previously the gadget was built by a udev
-# rule at coldplug, which is why the ordering used to be described against
-# S04udev; that rule is gone now that the server builds the gadget.)
+# Doing them from fstab (the inittab's `mount -a` sysinit line, which runs
+# before rcS) instead of S01fs's old rc5.d/S06 entry keeps them independent of
+# the first-boot partition dance and available to everything from early boot
+# on. (Previously the gadget was built by a udev rule at coldplug, which is
+# why the ordering used to be described against S04udev; that rule is gone now
+# that the server builds the gadget.)
 #
 # base-files owns /etc/fstab, so append here rather than shipping a second
 # /etc/fstab from nanokvm-gadget (which would be an ipk file conflict).

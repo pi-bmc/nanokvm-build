@@ -99,10 +99,13 @@ IMAGE_INSTALL:append = " \
 # ssdp-responder is gone (JetKVM-style minimalism): the server's built-in
 # mDNS responder already provides discovery, and the BMC is always reachable
 # at the well-known RHI address; a second discovery daemon earned no keep.
+# ntp (ntpd + its bbappend) is gone too: clock sync is in-process now
+# (server/service/timesync, a JetKVM-style SNTP client with an HTTP Date
+# fallback that also honors NTP servers from the DHCP lease), so the last
+# non-app network daemon and its init script left the image.
 IMAGE_INSTALL:append = " \
     iputils \
     iputils-arping \
-    ntp \
     ethtool \
     iproute2 \
     "

@@ -22,7 +22,7 @@ repos:
       meta-poky:
 
   # meta-oe: haveged, jansson (nftables dep). meta-networking: nftables,
-  # libnftnl, ntp, wireguard-tools. meta-python ships nothing into the image
+  # libnftnl, wireguard-tools. meta-python ships nothing into the image
   # but is a hard LAYERDEPENDS of meta-networking. meta-filesystems was only
   # needed for exfatprogs, gone with the exfat /data partition.
   meta-openembedded:

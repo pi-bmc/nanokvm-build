@@ -98,7 +98,10 @@ do_install() {
 }
 
 INITSCRIPT_NAME = "nanokvm"
-INITSCRIPT_PARAMS = "defaults 95"
+# busybox init's rcS/rcK runners only ever walk rcS.d + rc5.d (boot) and
+# rc6.d (shutdown), so register exactly those instead of "defaults 95"
+# (which would scatter dead links across rc0.d-rc4.d).
+INITSCRIPT_PARAMS = "start 95 5 . stop 95 6 ."
 
 # The server's network service (server/service/network) shells out to `nft`
 # for the usb0 forward-path guard; it degrades gracefully when the binary is
