@@ -22,6 +22,14 @@ FILESEXTRAPATHS:prepend := "${THISDIR}/files:"
 #        without it dtc fails "Reference to non-existent node or label usbphy".
 #   0003 local board tweaks on top of 0001: &usb -> dr_mode "peripheral" (gadget
 #        role) and i2c1 on the repurposed SDIO1 pads for the slave EEPROM.
+#   0007 the internal EPHY driver: the full CVITEK bring-up sequence, moved
+#        here from U-Boot (meta-sophgo's 0004 no longer calls it) so the PHY's
+#        analog front end stays powered down for the whole of boot and only
+#        comes up when the interface is opened. Enabled by CONFIG_CV1800B_PHY.
+#   0008 declares the PHY in the board DTS. Load-bearing, not a convenience:
+#        with U-Boot no longer writing MII_PHYSID1/2 there is no id to probe,
+#        so without it phylib creates no device and eth0 never opens. Must
+#        follow 0003, the last patch to touch the board .dts.
 # nanokvm.cfg is merged in do_configure:append below.
 SRC_URI:append:sg2002-licheervnano = " \
     file://0001-apply-dts-usb-dev.patch \
@@ -29,6 +37,8 @@ SRC_URI:append:sg2002-licheervnano = " \
     file://0003-nanokvm-board-dts.patch \
     file://0005-nanokvm-cv1800-reboot.patch \
     file://0006-usb-dwc2-cv1800-enable-gadget-dma.patch \
+    file://0007-net-phy-sophgo-cv1800b-internal-ephy.patch \
+    file://0008-riscv-dts-sophgo-nanokvm-declare-cv1800b-ephy.patch \
     file://nanokvm.cfg \
     "
 

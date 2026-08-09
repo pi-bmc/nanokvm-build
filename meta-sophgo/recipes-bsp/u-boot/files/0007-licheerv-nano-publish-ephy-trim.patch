@@ -1,0 +1,227 @@
+From: NanoKVM build <nbatkins@gmail.com>
+Date: Sun, 9 Aug 2026 00:00:00 +0000
+Subject: [PATCH] licheerv-nano: publish the fused EPHY analog trim to Linux
+
+Linux owns the EPHY bring-up now (0004 no longer calls cv1800b_ephy_init, so
+the front end stays powered down through boot), but part of that sequence
+depends on three values that only exist in the eFUSE: the TX i-tune, the echo
+cancellation coefficient and the TX termination trim.
+
+Linux cannot read them. The eFUSE gates clk_efuse and clk_apb_efuse are
+modelled by the kernel's cv1800 clk driver, nothing in the device tree claims
+them, and clk_disable_unused() switches them off at late_initcall_sync -- a
+read of the shadow from a kernel driver would stall the bus rather than fail.
+
+U-Boot can, and already does for the MAC. Read the trim in the same place and
+publish each valid field into the PHY node, keyed off the compatible the board
+DTS gives it. Fields with no valid fuse are left out so the kernel driver can
+tell them apart from a fuse of zero and use its vendor defaults.
+
+While here, fix the shadow addresses. The eFUSE block base is 0x03050000 and
+its shadow mirror starts at +0x100, so the vendor's "shadow offset" N is at
+0x03050100 + N; the vendor's own Linux driver reads exactly 0x20 and 0x24 via
+cvi_efuse_read_from_shadow(). This tree spelled those two 0x03051020 and
+0x03051024 -- the digits transposed, addressing nothing -- and also read the
+Rterm trim from that bogus second word when it actually shares shadow 0x20
+with the valid flags. cv1800b_ephy_init() had the same three reads and is
+corrected with them, so it is right if it is ever called again.
+
+Upstream-Status: Pending
+Signed-off-by: NanoKVM build <nbatkins@gmail.com>
+---
+diff --git a/board/sophgo/licheerv_nano/board.c b/board/sophgo/licheerv_nano/board.c
+index 2ccf720..8ee9365 100644
+--- a/board/sophgo/licheerv_nano/board.c
++++ b/board/sophgo/licheerv_nano/board.c
+@@ -9,6 +9,9 @@
+ 
+ #include "ethernet.h"
+ 
++/* Matches the board DTS node the kernel EPHY driver binds to. */
++#define CV1800B_EPHY_COMPAT "ethernet-phy-id0043.5649"
++
+ int board_init(void)
+ {
+ 	if (IS_ENABLED(CONFIG_SYSRESET_CV1800B))
+@@ -48,11 +51,30 @@ int board_init(void)
+  */
+ int ft_board_setup(void *blob, struct bd_info *bd)
+ {
++	struct cv1800b_ephy_trim trim;
+ 	u8 mac[6];
+ 
+ 	cv1800b_derive_mac(mac);
+ 	do_fixup_by_compat(blob, "sophgo,cv1800b-dwmac",
+ 			   "local-mac-address", mac, sizeof(mac), 1);
+ 
++	/*
++	 * Hand Linux the fused EPHY analog trim as well. Linux owns the PHY
++	 * bring-up now (board_init deliberately leaves the PHY shut down), but
++	 * it cannot read these fuses itself -- see cv1800b_ephy_trim(). Only
++	 * fields with a valid fuse are published; the kernel driver falls back
++	 * to the vendor defaults for anything absent.
++	 */
++	cv1800b_ephy_trim(&trim);
++	if (trim.have_itune)
++		do_fixup_by_compat_u32(blob, CV1800B_EPHY_COMPAT,
++				       "sophgo,tx-itune", trim.itune, 1);
++	if (trim.have_echo)
++		do_fixup_by_compat_u32(blob, CV1800B_EPHY_COMPAT,
++				       "sophgo,tx-echo-i", trim.echo, 1);
++	if (trim.have_rterm)
++		do_fixup_by_compat_u32(blob, CV1800B_EPHY_COMPAT,
++				       "sophgo,tx-rterm", trim.rterm, 1);
++
+ 	return 0;
+ }
+diff --git a/board/sophgo/licheerv_nano/ethernet.c b/board/sophgo/licheerv_nano/ethernet.c
+index 1687d00..36fca65 100644
+--- a/board/sophgo/licheerv_nano/ethernet.c
++++ b/board/sophgo/licheerv_nano/ethernet.c
+@@ -37,6 +37,8 @@
+ #include <linux/types.h>
+ #include <u-boot/crc.h>
+ 
++#include "ethernet.h"
++
+ /*
+  * EPHY APB register block.  With APB_RW_SEL=1 the PHY MII registers are mapped
+  * directly at EPHY_BASE + reg*4; MII reg 0x1f is the page select, written as
+@@ -48,12 +50,23 @@
+ #define EPHY_APB_RW_SEL   0x03009804UL   /* 1: APB direct, 0: hand to MAC MDIO */
+ 
+ /* eFUSE shadow (OTP mirrored into these regs at boot): valid flags + trims. */
+-#define EPHY_EFUSE_VALID  0x03050120UL
++/*
++ * eFUSE shadow words. The block base is 0x03050000 and the shadow mirror
++ * starts at +0x100, so vendor "shadow offset" N lives at 0x03050100 + N --
++ * the same addressing the vendor's Linux driver uses through
++ * cvi_efuse_read_from_shadow() (drivers/net/phy/cvitek.c).
++ *
++ * The trim is spread across both words: the valid flags and the Rterm value
++ * share shadow 0x20, while i-tune and Echo_I come from shadow 0x24. The
++ * earlier spellings of these two (0x03051020 / 0x03051024) had the digits
++ * transposed and addressed nothing.
++ */
++#define EFUSE_SHADOW(off) (0x03050100UL + (off))
++#define EPHY_EFUSE_VALID  EFUSE_SHADOW(0x20)   /* flags + Rterm trim   */
++#define EPHY_EFUSE_TRIM   EFUSE_SHADOW(0x24)   /* i-tune + Echo_I trim */
+ #define EFUSE_TXECHORC    0x00000100UL   /* bit 8  */
+ #define EFUSE_TXITUNE     0x00000200UL   /* bit 9  */
+ #define EFUSE_TXRXTERM    0x00000800UL   /* bit 11 */
+-#define EFUSE_W0          0x03051020UL
+-#define EFUSE_W1          0x03051024UL
+ 
+ static inline void ephy_wr(unsigned long a, u32 v)
+ {
+@@ -92,21 +105,22 @@ void cv1800b_ephy_init(void)
+ 	/* ---- eFUSE analog trim (vendor cvitek.c); defaults if unfused ---- */
+ 	/* TX i-tune / double bias current -> page5 0x9064 */
+ 	if ((ephy_rd(EPHY_EFUSE_VALID) & EFUSE_TXITUNE) == EFUSE_TXITUNE) {
+-		val = ((ephy_rd(EFUSE_W1) >> 24) & 0xFF) |
+-		      (((ephy_rd(EFUSE_W1) >> 16) & 0xFF) << 8);
++		val = ((ephy_rd(EPHY_EFUSE_TRIM) >> 24) & 0xFF) |
++		      (((ephy_rd(EPHY_EFUSE_TRIM) >> 16) & 0xFF) << 8);
+ 		ephy_clrset(0x03009064, 0xFFFF, val);
+ 	} else {
+ 		ephy_wr(0x03009064, 0x5a5a);
+ 	}
+ 	/* Echo_I -> page5 0x9054[15:8] */
+ 	if ((ephy_rd(EPHY_EFUSE_VALID) & EFUSE_TXECHORC) == EFUSE_TXECHORC)
+-		ephy_clrset(0x03009054, 0xFF00, ((ephy_rd(EFUSE_W1) >> 8) & 0xFF) << 8);
++		ephy_clrset(0x03009054, 0xFF00,
++			    ((ephy_rd(EPHY_EFUSE_TRIM) >> 8) & 0xFF) << 8);
+ 	else
+ 		ephy_wr(0x03009054, 0x0000);
+ 	/* TX Rterm + Echo RC delay -> page5 0x9058[11:4] */
+ 	if ((ephy_rd(EPHY_EFUSE_VALID) & EFUSE_TXRXTERM) == EFUSE_TXRXTERM) {
+-		val = (((ephy_rd(EFUSE_W0) >> 28) & 0xF) << 4) |
+-		      (((ephy_rd(EFUSE_W0) >> 24) & 0xF) << 8);
++		val = (((ephy_rd(EPHY_EFUSE_VALID) >> 28) & 0xF) << 4) |
++		      (((ephy_rd(EPHY_EFUSE_VALID) >> 24) & 0xF) << 8);
+ 		ephy_clrset(0x03009058, 0xFF0, val);
+ 	} else {
+ 		ephy_wr(0x03009058, 0x0bb0);
+@@ -236,7 +250,7 @@ void cv1800b_ephy_init(void)
+ 
+ /*
+  * eFUSE shadow: the fuse array mirrored into MMIO at boot. cv1800b_ephy_init()
+- * above already reads it (EPHY_EFUSE_VALID / EFUSE_W0 / EFUSE_W1) during
++ * above already reads it (the EPHY_EFUSE_* shadow words) during
+  * board_init, so the block is clocked and readable here -- no clock-gate
+  * poking, unlike a raw read from Linux which stalls the bus.
+  */
+@@ -250,6 +264,50 @@ void cv1800b_ephy_init(void)
+  * board.c's ft_board_setup() writes this into the kernel DT so stmmac uses it
+  * instead of a fresh random address each boot.
+  */
++/*
++ * Read the fused EPHY analog trim, for Linux to apply during its own bring-up.
++ *
++ * These are the same three fuses cv1800b_ephy_init() consumes; they are read
++ * here because Linux cannot. The eFUSE gates (clk_efuse, clk_apb_efuse) are
++ * modelled by the kernel's cv1800 clk driver, nothing claims them, and
++ * clk_disable_unused() switches them off at late_initcall_sync -- so by the
++ * time a kernel driver runs, a read of the shadow would stall the bus.
++ *
++ * Each output is set only when its fuse is valid. An unfused field is left
++ * alone so the caller can tell "no fused value" from "fused to zero": the
++ * kernel driver has vendor defaults for that case, but on a part that *is*
++ * fused those defaults put the transmitter far enough out of spec that the
++ * link partner logs FCS errors on most frames.
++ */
++void cv1800b_ephy_trim(struct cv1800b_ephy_trim *t)
++{
++	u32 valid = ephy_rd(EPHY_EFUSE_VALID);
++
++	t->have_itune = false;
++	t->have_echo = false;
++	t->have_rterm = false;
++
++	/* TX i-tune / double bias current -> page 5 reg 0x19 */
++	if ((valid & EFUSE_TXITUNE) == EFUSE_TXITUNE) {
++		t->itune = ((ephy_rd(EPHY_EFUSE_TRIM) >> 24) & 0xFF) |
++			   (((ephy_rd(EPHY_EFUSE_TRIM) >> 16) & 0xFF) << 8);
++		t->have_itune = true;
++	}
++
++	/* Echo_I -> page 5 reg 0x15, bits 15:8 */
++	if ((valid & EFUSE_TXECHORC) == EFUSE_TXECHORC) {
++		t->echo = ((ephy_rd(EPHY_EFUSE_TRIM) >> 8) & 0xFF) << 8;
++		t->have_echo = true;
++	}
++
++	/* TX Rterm + Echo RC delay -> page 5 reg 0x16, bits 11:4 */
++	if ((valid & EFUSE_TXRXTERM) == EFUSE_TXRXTERM) {
++		t->rterm = (((ephy_rd(EPHY_EFUSE_VALID) >> 28) & 0xF) << 4) |
++			   (((ephy_rd(EPHY_EFUSE_VALID) >> 24) & 0xF) << 8);
++		t->have_rterm = true;
++	}
++}
++
+ void cv1800b_derive_mac(u8 mac[6])
+ {
+ 	unsigned char buf[EFUSE_SHADOW_SIZE];
+diff --git a/board/sophgo/licheerv_nano/ethernet.h b/board/sophgo/licheerv_nano/ethernet.h
+index 6c21842..9506956 100644
+--- a/board/sophgo/licheerv_nano/ethernet.h
++++ b/board/sophgo/licheerv_nano/ethernet.h
+@@ -8,7 +8,18 @@
+ 
+ #include <linux/types.h>
+ 
++/* Fused EPHY analog trim; have_* is false for a field with no valid fuse. */
++struct cv1800b_ephy_trim {
++	u16 itune;
++	u16 echo;
++	u16 rterm;
++	bool have_itune;
++	bool have_echo;
++	bool have_rterm;
++};
++
+ void cv1800b_ephy_init(void);
+ void cv1800b_derive_mac(u8 mac[6]);
++void cv1800b_ephy_trim(struct cv1800b_ephy_trim *t);
+ 
+ #endif

@@ -1,0 +1,559 @@
+From: NanoKVM build <nbatkins@gmail.com>
+Date: Sun, 9 Aug 2026 00:00:00 +0000
+Subject: [PATCH] net: phy: add a driver for the Sophgo CV1800B internal EPHY
+
+The SG2002's internal 10/100 EPHY comes out of reset shut down, with its
+analog front end powered off and untuned and with no identification, and
+needs the CVITEK vendor bring-up sequence before it will train a link.
+
+That sequence used to run in U-Boot (meta-sophgo's 0004 patch), which left
+the front end -- line driver, PLL, RX ADC and PGA -- powered for the whole
+of boot. Move it here so it runs when the interface is opened instead: on a
+board fed from a marginal supply that keeps the PHY's draw out of the window
+where the rail is under the most stress. It also gives the front end a
+recovery path it never had, since anything that disturbs it can now be put
+back without a reboot; .link_change_notify re-runs the sequence on link loss.
+
+The sequence is the vendor's, in the vendor's order, and reaches the PHY
+through the APB alias of its register file rather than over MDIO so it stays
+byte-for-byte the known-good one. The MDIO bus lock is held across it because
+selecting that alias takes the register file away from the MAC's MDIO master.
+
+Three things follow from the boot loader no longer doing this, and are worth
+stating because they are load-bearing:
+
+  * Nothing writes MII_PHYSID1/2 before Linux, so no id can be probed. The
+    board DTS declares the PHY with an "ethernet-phy-id0043.5649" compatible
+    (patch 0008) and phylib creates the device without reading.
+  * .features is stated rather than read. phy_probe() would otherwise call
+    genphy_read_abilities(), and at probe the PHY is still in reset and would
+    not answer.
+  * The wrapper register at base + 0x800 is shared with the mdio-mux-mmioreg
+    node. Both map it non-exclusively -- the mux uses a plain ioremap in its
+    switch callback -- and both do read-modify-write on disjoint bits, so the
+    driver preserves the mux select in bit 7 where the vendor code, having no
+    mux driver to disturb, wrote the whole word.
+
+The analog trim is fused per part and the eFUSE is unreadable by the time
+Linux runs -- clk_efuse/clk_apb_efuse are modelled by clk-cv1800.c, nothing
+claims them, and clk_disable_unused() gates them off at late_initcall_sync --
+so U-Boot reads it and publishes it in the device tree (meta-sophgo's 0007).
+A fused value is merged into its own field; the vendor's unfused defaults,
+used only when the DT carries nothing, replace the register whole. That
+asymmetry is the vendor's and is reproduced rather than tidied up.
+
+The defaults are a genuine last resort, not an equivalent path: on a part
+that is fused they put the transmitter far enough out of spec that the link
+partner drops most frames. A board running on them showed 37 FCS errors in
+68 frames received at the switch, and never held a DHCP lease. The driver
+warns when it falls back to them.
+
+There is deliberately no .link_change_notify. An earlier revision re-ran the
+bring-up on every transition to PHY_NOLINK, which made sense when this driver
+only toggled the front-end power enables; now that the sequence ends by
+releasing the main reset and restarting autonegotiation, doing that on every
+link drop fights phylib's own negotiation. phylib re-runs .config_init after
+a reset or resume, which covers the cases that really do lose the front-end
+configuration.
+
+Not upstream -- local to this build.
+---
+diff --git a/drivers/net/phy/Kconfig b/drivers/net/phy/Kconfig
+index 98700d0..eaa5d42 100644
+--- a/drivers/net/phy/Kconfig
++++ b/drivers/net/phy/Kconfig
+@@ -225,6 +225,18 @@ config CORTINA_PHY
+ 	help
+ 	  Currently supports the CS4340 phy.
+ 
++config CV1800B_PHY
++	tristate "Sophgo CV1800B/SG2002 internal Ethernet PHY"
++	depends on ARCH_SOPHGO || COMPILE_TEST
++	help
++	  Supports the 10/100 Ethernet PHY integrated in the Sophgo CV1800B
++	  and SG2002 SoCs.
++
++	  The PHY needs its analog front end powered up explicitly, and loses
++	  that configuration on reset or resume.  Without this driver the
++	  generic PHY driver binds instead and the front end is only ever set
++	  up once, by the boot loader.
++
+ config DAVICOM_PHY
+ 	tristate "Davicom PHYs"
+ 	help
+diff --git a/drivers/net/phy/Makefile b/drivers/net/phy/Makefile
+index 76e0db4..4edc156 100644
+--- a/drivers/net/phy/Makefile
++++ b/drivers/net/phy/Makefile
+@@ -50,6 +50,7 @@ obj-$(CONFIG_BCM_NET_PHYPTP)	+= bcm-phy-ptp.o
+ obj-$(CONFIG_BROADCOM_PHY)	+= broadcom.o
+ obj-$(CONFIG_CICADA_PHY)	+= cicada.o
+ obj-$(CONFIG_CORTINA_PHY)	+= cortina.o
++obj-$(CONFIG_CV1800B_PHY)	+= cv1800b.o
+ obj-$(CONFIG_DAVICOM_PHY)	+= davicom.o
+ obj-$(CONFIG_DP83640_PHY)	+= dp83640.o
+ obj-$(CONFIG_DP83822_PHY)	+= dp83822.o
+diff --git a/drivers/net/phy/cv1800b.c b/drivers/net/phy/cv1800b.c
+new file mode 100644
+index 0000000..5e36ee7
+--- /dev/null
++++ b/drivers/net/phy/cv1800b.c
+@@ -0,0 +1,458 @@
++// SPDX-License-Identifier: GPL-2.0+
++/*
++ * Driver for the 10/100 Ethernet PHY integrated in the Sophgo CV1800B /
++ * SG2002 SoCs.
++ *
++ * The PHY comes out of reset shut down, with its analog front end powered off
++ * and untuned, and with no identification (MII_PHYSID1/2 read as zero).  It
++ * needs the CVITEK vendor bring-up sequence before it will train a link at
++ * all: release the shutdown and the digital/analog resets, power the front end
++ * up, apply the analog trim, load the MLT3 / link-pulse / TP_IDLE / 10BaseT
++ * waveform tables, set AGC and the RX equalizer, then release the main reset
++ * to start autonegotiation.
++ *
++ * That sequence traditionally runs in the boot loader.  Doing it here instead
++ * keeps the front end -- line driver, PLL, RX ADC and PGA -- powered down for
++ * the whole of boot, and only turns it on when the interface is actually
++ * brought up.  On a board running from a marginal supply that removes the
++ * PHY's draw from the window where the rail is under the most stress.
++ *
++ * Because the boot loader no longer writes MII_PHYSID1/2, nothing can probe an
++ * id off this PHY: the device tree must declare it with an
++ * "ethernet-phy-id0043.5649" compatible so phylib creates the device without
++ * reading.  For the same reason the driver states .features rather than
++ * letting phylib read the abilities at probe -- at that point the PHY is still
++ * in reset and would not answer.  The first register access of any kind
++ * happens in .config_init, which phylib calls from phy_attach_direct(), i.e.
++ * when the netdev is opened.
++ *
++ * Registers are reached through the APB alias of the PHY register file rather
++ * than over MDIO, so the sequence stays byte-for-byte the vendor's.  The MDIO
++ * bus lock is held across it because switching the alias on takes the register
++ * file away from the MAC's MDIO master.
++ *
++ * Sequence and register values transcribed from the CVITEK vendor U-Boot
++ * (board/cvitek/cv181x/board.c cv181x_ephy_id_init, drivers/net/phy/cvitek.c
++ * cv182xa_ephy_init).  SG2002 is CV181x ("mars"), so the page 18 equalizer
++ * coefficients are the CV181x set.
++ */
++
++#include <linux/bitops.h>
++#include <linux/io.h>
++#include <linux/module.h>
++#include <linux/of.h>
++#include <linux/phy.h>
++
++/* Written into MII_PHYSID1/2 by the sequence below: ASCII "CVI". */
++#define CV1800B_PHY_ID			0x00435649
++
++/*
++ * Offsets within the mapped EPHY block.  The register file is aliased one
++ * 32-bit word per MII register, so MII register N lives at N * 4.  The two
++ * wrapper registers sit at the top of the same page.
++ */
++#define CV1800B_MII(reg)		((reg) * 4)
++#define CV1800B_CTL			0x800
++#define CV1800B_APB_RW_SEL		0x804
++
++/* CV1800B_APB_RW_SEL */
++#define CV1800B_APB			1	/* register file on the APB alias */
++#define CV1800B_MDIO			0	/* register file back on MDIO   */
++
++/*
++ * CV1800B_CTL, staged: each value releases one more reset.  Bit 7 is not ours
++ * -- it is the mdio-mux-mmioreg select for this same register -- so every
++ * write preserves it.
++ */
++#define CV1800B_CTL_MUX_SEL		BIT(7)
++#define CV1800B_CTL_SHUTDOWN_OFF	0x0900	/* leave shutdown          */
++#define CV1800B_CTL_DIG_RST_N		0x0904	/* + digital reset released */
++#define CV1800B_CTL_ANA_RST_N		0x0906	/* + analog reset released  */
++#define CV1800B_CTL_MAIN_RST_N		0x090e	/* + main reset -> autoneg  */
++
++/* Pages, written to MII register 0x1f as (page << 8). */
++#define CV1800B_PAGE_SEL		0x1f
++#define CV1800B_PAGE_SHIFT		8
++#define CV1800B_PAGE_MAIN		0x00
++#define CV1800B_PAGE_LED		0x01
++#define CV1800B_PAGE_AFE		0x05
++#define CV1800B_PAGE_LINK_PULSE		0x0a
++#define CV1800B_PAGE_TP_IDLE		0x0b
++#define CV1800B_PAGE_10BT_A		0x0d
++#define CV1800B_PAGE_10BT_B		0x0e
++#define CV1800B_PAGE_10BT_C		0x0f
++#define CV1800B_PAGE_MLT3_POS		0x10
++#define CV1800B_PAGE_MLT3_NEG		0x11
++#define CV1800B_PAGE_EQUALIZER		0x12
++#define CV1800B_PAGE_AGC		0x13
++
++/* Page 5: analog front end power-down / enable control. */
++#define CV1800B_PD_EN_CTL		0x10
++#define CV1800B_ANA_PD_OFF		0x0c00
++#define CV1800B_ANA_EN			0x0c7e
++#define CV1800B_EN_TX_RTERM		BIT(0)
++
++/* Page 5: analog trim, and the vendor defaults for an unfused part. */
++#define CV1800B_TX_ITUNE		0x19
++#define CV1800B_TX_ECHO_I		0x15
++#define CV1800B_TX_RTERM		0x16
++#define CV1800B_TX_ITUNE_DEFAULT	0x5a5a
++#define CV1800B_TX_ECHO_I_DEFAULT	0x0000
++#define CV1800B_TX_RTERM_DEFAULT	0x0bb0
++
++/* Fields a fused value occupies; an unfused default writes the register whole. */
++#define CV1800B_TX_ITUNE_MASK		0xffff
++#define CV1800B_TX_ECHO_I_MASK		0xff00
++#define CV1800B_TX_RTERM_MASK		0x0ff0
++#define CV1800B_TRIM_WHOLE_REG		0xffff
++
++#define CV1800B_RX_VCM			0x13
++#define CV1800B_RX_VCM_ADJ		0x0820
++
++struct cv1800b_regval {
++	u8 reg;
++	u16 val;
++};
++
++/*
++ * One analog trim value.  A fused value is merged into its field and the rest
++ * of the register left alone; an unfused default replaces the whole register.
++ * That asymmetry is the vendor's, and is reproduced rather than tidied up.
++ */
++struct cv1800b_trim {
++	u16 val;
++	u16 mask;
++};
++
++struct cv1800b_priv {
++	void __iomem *base;
++	struct cv1800b_trim tx_itune;
++	struct cv1800b_trim tx_echo_i;
++	struct cv1800b_trim tx_rterm;
++};
++
++/* 100BaseT rise/fall shaping, page 5. */
++static const struct cv1800b_regval cv1800b_100bt[] = {
++	{ 0x17, 0x0c10 },	/* rise update            */
++	{ 0x1a, 0x0003 },	/* falling phase          */
++	{ 0x15, 0x0000 },	/* double TX bias current */
++};
++
++/* MLT3 shaping, positive half (page 16) and negative half (page 17). */
++static const struct cv1800b_regval cv1800b_mlt3_pos[] = {
++	{ 0x1a, 0x1000 }, { 0x1b, 0x3020 }, { 0x1c, 0x5040 }, { 0x1d, 0x7060 },
++	{ 0x16, 0x1708 }, { 0x17, 0x3827 }, { 0x18, 0x5748 }, { 0x19, 0x7867 },
++};
++
++static const struct cv1800b_regval cv1800b_mlt3_neg[] = {
++	{ 0x10, 0x9080 }, { 0x11, 0xb0a0 }, { 0x12, 0xd0c0 }, { 0x13, 0xf0e0 },
++	{ 0x14, 0x9788 }, { 0x15, 0xb8a7 }, { 0x16, 0xd7c8 }, { 0x17, 0xf8e7 },
++};
++
++static const struct cv1800b_regval cv1800b_link_pulse[] = {
++	{ 0x10, 0x3e00 }, { 0x11, 0x7864 }, { 0x12, 0x6470 }, { 0x13, 0x5f62 },
++	{ 0x14, 0x5a5a }, { 0x15, 0x5458 }, { 0x16, 0xb23a }, { 0x17, 0x94a0 },
++	{ 0x18, 0x9092 }, { 0x19, 0x8a8e }, { 0x1a, 0x8688 }, { 0x1b, 0x8484 },
++	{ 0x1c, 0x0082 },
++};
++
++static const struct cv1800b_regval cv1800b_tp_idle[] = {
++	{ 0x10, 0x5252 }, { 0x11, 0x5252 }, { 0x12, 0x4b52 }, { 0x13, 0x3d47 },
++	{ 0x14, 0xaa99 }, { 0x15, 0x989e }, { 0x16, 0x9395 }, { 0x17, 0x9091 },
++	{ 0x18, 0x8e8f }, { 0x19, 0x8d8e }, { 0x1a, 0x8c8c }, { 0x1b, 0x8b8b },
++	{ 0x1c, 0x008a },
++};
++
++/* 10BaseT waveform tables, pages 13 through 16. */
++static const struct cv1800b_regval cv1800b_10bt_a[] = {
++	{ 0x10, 0x1e0a }, { 0x11, 0x3862 }, { 0x12, 0x1e62 }, { 0x13, 0x2a08 },
++	{ 0x14, 0x244c }, { 0x15, 0x1a44 }, { 0x16, 0x061c },
++};
++
++static const struct cv1800b_regval cv1800b_10bt_b[] = {
++	{ 0x10, 0x2d30 }, { 0x11, 0x3470 }, { 0x12, 0x0648 }, { 0x13, 0x261c },
++	{ 0x14, 0x3160 }, { 0x15, 0x2d5e },
++};
++
++static const struct cv1800b_regval cv1800b_10bt_c[] = {
++	{ 0x10, 0x2922 }, { 0x11, 0x366e }, { 0x12, 0x0752 }, { 0x13, 0x2556 },
++	{ 0x14, 0x2348 }, { 0x15, 0x0c30 },
++};
++
++static const struct cv1800b_regval cv1800b_10bt_d[] = {
++	{ 0x10, 0x1e08 }, { 0x11, 0x3868 }, { 0x12, 0x1462 }, { 0x13, 0x1a0e },
++	{ 0x14, 0x305e }, { 0x15, 0x2f62 },
++};
++
++static const struct cv1800b_regval cv1800b_agc[] = {
++	{ 0x16, 0x0012 },	/* max swing */
++	{ 0x17, 0x6848 },	/* min swing */
++};
++
++/* RX equalizer, CV181x ("mars") coefficients -- CV180x uses a different set. */
++static const struct cv1800b_regval cv1800b_equalizer[] = {
++	{ 0x12, 0x0808 },	/* lpf */
++	{ 0x13, 0x0808 },
++	{ 0x14, 0x32f8 },	/* hpf */
++	{ 0x15, 0xf8dc },
++};
++
++static void cv1800b_wr(struct cv1800b_priv *priv, u32 off, u16 val)
++{
++	writel(val, priv->base + off);
++}
++
++static u32 cv1800b_rd(struct cv1800b_priv *priv, u32 off)
++{
++	return readl(priv->base + off);
++}
++
++static void cv1800b_mii_wr(struct cv1800b_priv *priv, u8 reg, u16 val)
++{
++	cv1800b_wr(priv, CV1800B_MII(reg), val);
++}
++
++static void cv1800b_mii_setbits(struct cv1800b_priv *priv, u8 reg, u16 clr, u16 set)
++{
++	u32 v = cv1800b_rd(priv, CV1800B_MII(reg));
++
++	cv1800b_wr(priv, CV1800B_MII(reg), (v & ~clr) | set);
++}
++
++static void cv1800b_mii_trim(struct cv1800b_priv *priv, u8 reg,
++			     const struct cv1800b_trim *t)
++{
++	if (t->mask == CV1800B_TRIM_WHOLE_REG)
++		cv1800b_mii_wr(priv, reg, t->val);
++	else
++		cv1800b_mii_setbits(priv, reg, t->mask, t->val & t->mask);
++}
++
++static void cv1800b_select_page(struct cv1800b_priv *priv, u8 page)
++{
++	cv1800b_mii_wr(priv, CV1800B_PAGE_SEL, page << CV1800B_PAGE_SHIFT);
++}
++
++/*
++ * Stage the wrapper reset register.  Bit 7 belongs to the mdio-mux node that
++ * shares this address, so preserve whatever the mux driver left there -- the
++ * vendor code writes the whole word because in the boot loader there is no mux
++ * driver to disturb.
++ */
++static void cv1800b_ctl(struct cv1800b_priv *priv, u16 val)
++{
++	u32 mux = cv1800b_rd(priv, CV1800B_CTL) & CV1800B_CTL_MUX_SEL;
++
++	cv1800b_wr(priv, CV1800B_CTL, val | mux);
++}
++
++static void cv1800b_write_regs(struct cv1800b_priv *priv, u8 page,
++			       const struct cv1800b_regval *regs, size_t n)
++{
++	size_t i;
++
++	cv1800b_select_page(priv, page);
++	for (i = 0; i < n; i++)
++		cv1800b_mii_wr(priv, regs[i].reg, regs[i].val);
++}
++
++#define cv1800b_write_table(priv, page, table) \
++	cv1800b_write_regs((priv), (page), (table), ARRAY_SIZE(table))
++
++/*
++ * The full vendor bring-up.  Ordering matters throughout: the resets are
++ * released in stages around the front-end power-up, the trim has to land
++ * before the waveform tables, and the main reset is released last because that
++ * is what starts autonegotiation.
++ */
++static int cv1800b_config_init(struct phy_device *phydev)
++{
++	struct cv1800b_priv *priv = phydev->priv;
++	unsigned int i;
++
++	/*
++	 * Switching the register file onto the APB alias takes it away from the
++	 * MAC's MDIO master, so hold the bus lock until it is handed back.
++	 */
++	phy_lock_mdio_bus(phydev);
++
++	cv1800b_wr(priv, CV1800B_APB_RW_SEL, CV1800B_APB);
++	cv1800b_ctl(priv, CV1800B_CTL_SHUTDOWN_OFF);
++	cv1800b_ctl(priv, CV1800B_CTL_DIG_RST_N);
++
++	/* Power the analog front end up, then release its reset. */
++	cv1800b_select_page(priv, CV1800B_PAGE_AFE);
++	cv1800b_mii_wr(priv, CV1800B_PD_EN_CTL, CV1800B_ANA_PD_OFF);
++	cv1800b_mii_wr(priv, CV1800B_PD_EN_CTL, CV1800B_ANA_EN);
++	cv1800b_ctl(priv, CV1800B_CTL_ANA_RST_N);
++
++	/*
++	 * Give the PHY an id.  The hardware has none, and without this a later
++	 * probe -- or a boot loader that scans the bus -- finds nothing.
++	 */
++	cv1800b_select_page(priv, CV1800B_PAGE_AFE);
++	cv1800b_mii_wr(priv, MII_PHYSID1, CV1800B_PHY_ID >> 16);
++	cv1800b_mii_wr(priv, MII_PHYSID2, CV1800B_PHY_ID & 0xffff);
++
++	/* Analog trim, then the 100BaseT shaping that follows it. */
++	cv1800b_mii_trim(priv, CV1800B_TX_ITUNE, &priv->tx_itune);
++	cv1800b_mii_trim(priv, CV1800B_TX_ECHO_I, &priv->tx_echo_i);
++	cv1800b_mii_trim(priv, CV1800B_TX_RTERM, &priv->tx_rterm);
++	for (i = 0; i < ARRAY_SIZE(cv1800b_100bt); i++)
++		cv1800b_mii_wr(priv, cv1800b_100bt[i].reg, cv1800b_100bt[i].val);
++
++	/* MLT3 halves. */
++	cv1800b_write_table(priv, CV1800B_PAGE_MLT3_POS, cv1800b_mlt3_pos);
++	cv1800b_write_table(priv, CV1800B_PAGE_MLT3_NEG, cv1800b_mlt3_neg);
++
++	/* Back to page 5 for the termination and RX common-mode tweaks. */
++	cv1800b_select_page(priv, CV1800B_PAGE_AFE);
++	cv1800b_mii_setbits(priv, CV1800B_PD_EN_CTL, 0, CV1800B_EN_TX_RTERM);
++	cv1800b_mii_setbits(priv, CV1800B_RX_VCM, 0, CV1800B_RX_VCM_ADJ);
++
++	cv1800b_write_table(priv, CV1800B_PAGE_LINK_PULSE, cv1800b_link_pulse);
++	cv1800b_write_table(priv, CV1800B_PAGE_TP_IDLE, cv1800b_tp_idle);
++	cv1800b_write_table(priv, CV1800B_PAGE_10BT_A, cv1800b_10bt_a);
++	cv1800b_write_table(priv, CV1800B_PAGE_10BT_B, cv1800b_10bt_b);
++	cv1800b_write_table(priv, CV1800B_PAGE_10BT_C, cv1800b_10bt_c);
++	/* The fourth 10BaseT block shares page 16 with the MLT3 positive half. */
++	cv1800b_write_table(priv, CV1800B_PAGE_MLT3_POS, cv1800b_10bt_d);
++
++	/* LED_LNK/SPD/DPX onto the LED pad. */
++	cv1800b_select_page(priv, CV1800B_PAGE_LED);
++	cv1800b_mii_setbits(priv, 0x1a, 0x0f00, 0);
++
++	cv1800b_write_table(priv, CV1800B_PAGE_AGC, cv1800b_agc);
++	cv1800b_write_table(priv, CV1800B_PAGE_EQUALIZER, cv1800b_equalizer);
++
++	/* Main reset last: this is what starts autonegotiation. */
++	cv1800b_select_page(priv, CV1800B_PAGE_MAIN);
++	cv1800b_ctl(priv, CV1800B_CTL_MAIN_RST_N);
++	cv1800b_mii_setbits(priv, MII_BMCR, 0, BMCR_FULLDPLX);
++
++	cv1800b_wr(priv, CV1800B_APB_RW_SEL, CV1800B_MDIO);
++
++	phy_unlock_mdio_bus(phydev);
++
++	return 0;
++}
++
++static int cv1800b_resume(struct phy_device *phydev)
++{
++	int ret;
++
++	ret = genphy_resume(phydev);
++	if (ret)
++		return ret;
++
++	return cv1800b_config_init(phydev);
++}
++
++/*
++ * Read one trim value.  Present in the device tree means fused, so it is
++ * merged into its own field; absent means fall back to the vendor's unfused
++ * default, which replaces the register whole.
++ */
++static void cv1800b_read_trim(struct device_node *np, const char *prop,
++			      struct cv1800b_trim *t, u16 def, u16 mask)
++{
++	u32 val;
++
++	if (np && !of_property_read_u32(np, prop, &val)) {
++		t->val = val;
++		t->mask = mask;
++	} else {
++		t->val = def;
++		t->mask = CV1800B_TRIM_WHOLE_REG;
++	}
++}
++
++static int cv1800b_probe(struct phy_device *phydev)
++{
++	struct device *dev = &phydev->mdio.dev;
++	struct cv1800b_priv *priv;
++	u32 reg[2];
++	int ret;
++
++	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
++	if (!priv)
++		return -ENOMEM;
++
++	ret = of_property_read_u32_array(dev->of_node, "sophgo,ephy-reg", reg, 2);
++	if (ret)
++		return dev_err_probe(dev, ret,
++				     "missing sophgo,ephy-reg (base and size of the EPHY block)\n");
++
++	/*
++	 * Deliberately a plain ioremap and not a managed request: the wrapper
++	 * half of this block is also mapped by the mdio-mux-mmioreg node that
++	 * sits at base + 0x800, which would make an exclusive request fail.
++	 * The two drivers touch disjoint bits of the one register they share.
++	 */
++	priv->base = devm_ioremap(dev, reg[0], reg[1]);
++	if (!priv->base)
++		return -ENOMEM;
++
++	/*
++	 * The trim is fused per part, but the eFUSE is unreadable by the time
++	 * Linux runs -- its clocks are gated off as unused -- so the boot loader
++	 * reads it and publishes the values here.  Falling back to the vendor's
++	 * unfused defaults on a part that is fused produces a transmitter well
++	 * out of spec: the link partner sees a high rate of FCS errors and the
++	 * link does not stay up.  So the defaults are a last resort, and worth a
++	 * warning when they are used.
++	 */
++	cv1800b_read_trim(dev->of_node, "sophgo,tx-itune", &priv->tx_itune,
++			  CV1800B_TX_ITUNE_DEFAULT, CV1800B_TX_ITUNE_MASK);
++	cv1800b_read_trim(dev->of_node, "sophgo,tx-echo-i", &priv->tx_echo_i,
++			  CV1800B_TX_ECHO_I_DEFAULT, CV1800B_TX_ECHO_I_MASK);
++	cv1800b_read_trim(dev->of_node, "sophgo,tx-rterm", &priv->tx_rterm,
++			  CV1800B_TX_RTERM_DEFAULT, CV1800B_TX_RTERM_MASK);
++	if (priv->tx_itune.mask == CV1800B_TRIM_WHOLE_REG &&
++	    priv->tx_rterm.mask == CV1800B_TRIM_WHOLE_REG)
++		phydev_warn(phydev,
++			    "no fused analog trim in the device tree; using defaults, link quality may suffer\n");
++
++	phydev->priv = priv;
++
++	return 0;
++}
++
++static struct phy_driver cv1800b_phy_driver[] = {
++	{
++		PHY_ID_MATCH_EXACT(CV1800B_PHY_ID),
++		.name			= "Sophgo CV1800B internal",
++		/*
++		 * Stated rather than read: at probe the PHY is still in reset
++		 * and would not answer an abilities read.  10/100, the only
++		 * thing this part does.
++		 */
++		.features		= PHY_BASIC_FEATURES,
++		.probe			= cv1800b_probe,
++		.config_init		= cv1800b_config_init,
++		.suspend		= genphy_suspend,
++		.resume			= cv1800b_resume,
++		/*
++		 * No .link_change_notify.  An earlier revision re-ran the
++		 * bring-up on every transition to PHY_NOLINK, from when this
++		 * driver only toggled the front-end power enables.  Now that
++		 * the sequence ends by releasing the main reset and restarting
++		 * autonegotiation, firing it on every link drop fights phylib's
++		 * own negotiation instead of helping it.  phylib already re-runs
++		 * .config_init after a reset or a resume, which covers the cases
++		 * that actually lose the front-end configuration.
++		 */
++	},
++};
++
++module_phy_driver(cv1800b_phy_driver);
++
++static const struct mdio_device_id __maybe_unused cv1800b_phy_tbl[] = {
++	{ PHY_ID_MATCH_EXACT(CV1800B_PHY_ID) },
++	{ }
++};
++
++MODULE_DEVICE_TABLE(mdio, cv1800b_phy_tbl);
++
++MODULE_DESCRIPTION("Sophgo CV1800B internal Ethernet PHY driver");
++MODULE_LICENSE("GPL");
