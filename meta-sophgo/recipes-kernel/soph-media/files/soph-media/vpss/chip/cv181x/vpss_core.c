@@ -1647,7 +1647,21 @@ static int cvi_vpss_probe(struct platform_device *pdev)
 	//if (dev->clk_sys[1])
 	//	clk_set_rate(dev->clk_sys[1], dev->clk_sys1_freq);
 
+	/*
+	 * sclr_ctrl_init() programs the scaler's top, rt and interrupt-mask
+	 * registers, so the VPSS clocks have to be running across it. The vendor
+	 * relied on the bootloader leaving them on and only turns them on
+	 * explicitly in vpss_open(); under mainline, clk_disable_unused() has
+	 * already switched them off by the time this module is loaded, and the
+	 * write hangs the bus with no oops -- the same failure base_probe() hit
+	 * on vip_sys. Bracket the init with the driver's own helpers rather than
+	 * holding the clocks for the module's lifetime: everything past this
+	 * point is idle until vpss_open(), and this block is the only register
+	 * access on the probe path.
+	 */
+	open_clk(dev);
 	sclr_ctrl_init(false);
+	close_clk(dev);
 #if 0
 	if (smooth) {
 		sclr_disp_cfg_setup_from_reg();

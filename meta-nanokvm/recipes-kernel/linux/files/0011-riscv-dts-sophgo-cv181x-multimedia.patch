@@ -24,6 +24,19 @@ soph_base{,_riscv}.dtsi). Two translations were needed:
 Clocks map one-for-one onto mainline's sophgo,cv1800.h (CV181X_CLK_x -> CLK_x);
 the CV181x clock driver already carries the whole VIP and codec tree.
 
+base is the one node given clocks the vendor DTS does not list. Its driver maps
+vip_sys at 0xa0c8000 and writes VIP_SYS_VIP_AXI_SW straight out of probe,
+trusting the bootloader to have left the VIP clocks running -- which holds on
+the vendor kernel and does not here, because mainline's clk_disable_unused()
+sweep turns off everything unclaimed and nothing else in the tree claims
+clk_cfg_reg_vip, the APB clock gating that window. The result is not a probe
+failure but a dead board: the access hangs the bus with no oops and no panic.
+clk_axi_vip is listed alongside it conservatively -- cfg_reg_vip is the clock
+the window demonstrably needs, and holding the VIP AXI clock as well costs
+little next to the clk_ignore_unused this replaces. soph-media's base_probe
+claims both with devm_clk_bulk_get_all_enabled(), so the set stays a DT
+decision and a vendor DTS listing no clocks still probes.
+
 The reset IDs are the one gap. Mainline's cv18xx-reset.h stops short of the
 PHY block, so RST_DSIPHY..RST_CSIPHY1RST_APB (68..73) are added from the vendor
 cv181x-resets.h. The numbering is confirmed identical on both sides either
@@ -40,7 +53,7 @@ diff --git a/arch/riscv/boot/dts/sophgo/cv181x.dtsi b/arch/riscv/boot/dts/sophgo
 index bbdb30653e9a..a109db7611bb 100644
 --- a/arch/riscv/boot/dts/sophgo/cv181x.dtsi
 +++ b/arch/riscv/boot/dts/sophgo/cv181x.dtsi
-@@ -17,5 +17,128 @@ emmc: mmc@4300000 {
+@@ -17,5 +17,130 @@ emmc: mmc@4300000 {
  			clock-names = "core", "bus";
  			status = "disabled";
  		};
@@ -49,6 +62,8 @@ index bbdb30653e9a..a109db7611bb 100644
 +			compatible = "cvitek,base";
 +			reg = <0xa0c8000 0x20>;
 +			reg-names = "vip_sys";
++			clocks = <&clk CLK_CFG_REG_VIP>, <&clk CLK_AXI_VIP>;
++			clock-names = "clk_cfg_reg_vip", "clk_axi_vip";
 +			status = "disabled";
 +		};
 +

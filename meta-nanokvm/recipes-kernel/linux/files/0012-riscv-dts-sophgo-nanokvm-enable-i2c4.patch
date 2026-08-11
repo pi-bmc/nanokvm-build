@@ -17,7 +17,7 @@ Not upstream -- local to this build.
 ---
 --- a/arch/riscv/boot/dts/sophgo/sg2002-licheerv-nano-b.dts
 +++ b/arch/riscv/boot/dts/sophgo/sg2002-licheerv-nano-b.dts
-@@ -255,3 +255,58 @@
+@@ -255,3 +255,54 @@
  &cvi_vc_drv {
  	status = "okay";
  };
@@ -48,15 +48,11 @@ Not upstream -- local to this build.
 +		i2c4-pins {
 +			pinmux = <PINMUX(PIN_PWR_WAKEUP0, 5)>,
 +				 <PINMUX(PIN_PWR_BUTTON1, 5)>;
-+			bias-pull-up;
-+			drive-strength-microamp = <10800>;
 +		};
 +	};
 +};
 +
 +&i2c4 {
-+	pinctrl-0 = <&i2c4_cfg>;
-+	pinctrl-names = "default";
 +	status = "okay";
 +};
 +

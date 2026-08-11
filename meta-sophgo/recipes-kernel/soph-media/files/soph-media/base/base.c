@@ -812,6 +812,7 @@ static int base_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 	struct base_device *ndev;
+	struct clk_bulk_data *clks;
 	struct resource *res;
 	void __iomem *reg_base;
 	int ret;
@@ -821,6 +822,31 @@ static int base_probe(struct platform_device *pdev)
 	ndev = devm_kzalloc(&pdev->dev, sizeof(*ndev), GFP_KERNEL);
 	if (!ndev)
 		return -ENOMEM;
+
+	/*
+	 * Claim the VIP clocks before anything touches vip_sys.
+	 *
+	 * The vendor driver never did: it maps 0xa0c8000 and immediately
+	 * writes VIP_SYS_VIP_AXI_SW below, on the assumption that the
+	 * bootloader left the VIP clocks running. Mainline's
+	 * clk_disable_unused() sweep breaks that assumption at late initcall,
+	 * because nothing in the tree claims clk_cfg_reg_vip -- the APB clock
+	 * that gates this register window -- and an access to an unclocked VIP
+	 * register hangs the bus outright: no oops, no panic, the console just
+	 * stops. Booting with clk_ignore_unused papers over it by keeping every
+	 * clock in the SoC alive; this claims only the two this block needs.
+	 *
+	 * Every other module here already enables its own clocks on open or on
+	 * stream start (vpss_open, vi_enable_chn, cvi_jpeg/vcodec cfg), so base
+	 * was the only one relying on the sweep not happening.
+	 *
+	 * _get_all_ takes whatever the node lists, leaving the set a DT
+	 * decision, and returns 0 rather than an error when a node lists none --
+	 * so this still probes against the vendor DTS, which has no clocks here.
+	 */
+	ret = devm_clk_bulk_get_all_enabled(dev, &clks);
+	if (ret < 0)
+		return dev_err_probe(dev, ret, "cannot enable vip clocks\n");
 
 	ndev->shared_mem = kzalloc(BASE_SHARE_MEM_SIZE, GFP_KERNEL);
 	if (!ndev->shared_mem)

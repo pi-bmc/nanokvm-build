@@ -102,6 +102,89 @@ do_install() {
     done
 }
 
+# VPU firmware.
+#
+# The WAVE420L (H.265) and coda980 (H.264) cores have no ROM: cvi_vc_drv uploads
+# a firmware image to each on the first VENC_CREATE_CHN, and without it the core
+# never comes out of reset -- which looks like a channel that creates and then
+# produces nothing. The driver reads them with filp_open() from the absolute
+# paths in cvi_vc_drv/vcodec/config.h, so they have to exist in the rootfs at
+# ${datadir}/fw_vcodec by the time capture starts. (Building them into the .ko
+# instead, by defining FIRMWARE_H, is the vendor's other option; it costs ~390
+# KiB of permanently resident kernel memory on a board that has already given
+# 105 MiB of its 256 to the ION carveout, so the files win.)
+#
+# Upstream ships the blobs only as C arrays inside those headers, so extract
+# them back out at build time rather than committing a second copy that could
+# drift from the header the driver would compile against. The md5s are the ones
+# the vendor documents beside each path in config.h; checking them here turns a
+# mangled or truncated vendored header into a build failure instead of a VPU
+# that silently never starts.
+#
+# NB these blobs are Chips&Media firmware -- proprietary, no SPDX, no source.
+# They fall under the same licensing review the cvi_vc_drv note above calls for.
+# A separate task rather than do_install:append: do_install is a shell function
+# here, and bitbake cannot append Python to one.
+python do_install_vpu_firmware() {
+    import hashlib
+    import os
+    import re
+
+    helper = os.path.join(d.getVar('S'), 'cvi_vc_drv', 'vcodec', 'sample', 'helper')
+    dest = os.path.join(d.getVar('D') + d.getVar('datadir'), 'fw_vcodec')
+    bb.utils.mkdirhier(dest)
+
+    firmware = (
+        ('fw_h265.h', 'monet.bin', '202043a809fdfa607a2d01d179aa7c3d'),
+        ('fw_h264.h', 'coda980.bin', '02d773cb7b1ef926c7f1e30e5b7918f8'),
+    )
+
+    for header, blob, expected in firmware:
+        path = os.path.join(helper, header)
+        with open(path, 'r') as f:
+            text = f.read()
+
+        # One array per header, "CVI_U8 fw_hXXX[] = { 0x.., ... };". Slice to
+        # the braces first so a stray hex literal in a comment or an #ifdef
+        # outside the initialiser cannot contribute a byte.
+        start = text.index('= {') + len('= {')
+        body = text[start:text.index('};', start)]
+        data = bytes(int(b, 16) for b in re.findall(r'0x([0-9A-Fa-f]{2})', body))
+
+        got = hashlib.md5(data).hexdigest()
+        if got != expected:
+            bb.fatal('%s: extracted %d bytes with md5 %s, expected %s -- the '
+                     'vendored header does not match the firmware config.h '
+                     'documents' % (header, len(data), got, expected))
+
+        with open(os.path.join(dest, blob), 'wb') as f:
+            f.write(data)
+        os.chmod(os.path.join(dest, blob), 0o644)
+
+        bb.note('soph-media: extracted %s (%d bytes) from %s' % (blob, len(data), header))
+}
+addtask install_vpu_firmware after do_install before do_populate_sysroot do_package
+
+# Ship the firmware as its own package rather than folding it into ${PN}.
+#
+# Adding ${datadir}/fw_vcodec to FILES:${PN} does not work here, which is worth
+# recording because it looks like it should: `bitbake -e` shows the append
+# landing (FILES:soph-media=" /usr/share/fw_vcodec"), and do_package still fails
+# the installed-vs-shipped check with the blobs unclaimed. Something between
+# module.bbclass's FILES:${PN} = "" and kernel-module-split's do_package-time
+# rewrite of the meta package's FILES is dropping it; the exact mechanism was
+# not chased down, because a dedicated package is the better shape regardless --
+# these are vendor blobs of unestablished redistribution status, and a product
+# image should be able to account for them apart from the GPL modules.
+#
+# PACKAGES =+ puts it ahead of ${PN} so it claims these files first.
+PACKAGES =+ "${PN}-firmware"
+FILES:${PN}-firmware = "${datadir}/fw_vcodec"
+
+# The modules are useless without it -- the VPU never leaves reset -- so make
+# it a hard dependency rather than trusting the image to list both.
+RDEPENDS:${PN} += "${PN}-firmware"
+
 # ION is NOT here: it has to be built into the kernel (see meta-nanokvm patch
 # 0009). It calls cma_alloc()/plist_add()/arch_sync_dma_for_device(), none of
 # which mainline exports to modules, so it cannot be a .ko at all. Patch 0010

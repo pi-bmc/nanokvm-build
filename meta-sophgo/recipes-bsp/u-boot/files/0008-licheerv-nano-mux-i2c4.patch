@@ -1,0 +1,87 @@
+From: NanoKVM build <nbatkins@gmail.com>
+Subject: [PATCH] licheerv-nano: mux the IIC4 pads for the HDMI bridge
+
+The LT6911C HDMI-to-CSI bridge is controlled over i2c4 at 0x2b. Enabling
+i2c@4040000 in the kernel DTS is not enough: the pads also have to be muxed
+to IIC4, and doing that through Linux pinctrl does not work on this SoC.
+
+A DTS pinctrl group of
+
+	pinmux = <PINMUX(PIN_PWR_WAKEUP0, 5)>,	/* IIC4_SCL */
+		 <PINMUX(PIN_PWR_BUTTON1, 5)>;	/* IIC4_SDA */
+
+is rejected by pinctrl-cv18xx: the i2c controller then fails
+pinctrl_bind_pins() with -EINVAL and never binds, leaving the board with no
+/dev/i2c-4 at all. It fails silently -- nothing is logged at default level.
+Bisected by stripping the group down: pinmux alone still fails, and removing
+pinctrl-0 from &i2c4 entirely is what makes the controller bind. So it is the
+pinmux entry that is refused, not the pin configuration. Every static check
+that would explain it passes -- mux 5 is within the pad's mux_func_max of 7,
+PINMUX() sets mux2 to PIN_MUX_INVALD as the driver requires, both pins are
+present in the sorted pin array that sophgo_get_pin() bsearches, they share
+an io-type and power domain, and both the sys and rtc register areas the
+pads' conf lives in are mapped.
+
+So do what the vendor does. Sipeed's own board init muxes these pads with
+raw register writes rather than pinctrl (LicheeRV-Nano-Build,
+build/boards/sg200x/sg2002_licheervnano_sd/u-boot/cvi_board_init.c):
+
+	mmio_write_32(0x03001090, 0x5);	// IIC4_SCL
+	mmio_write_32(0x03001098, 0x5);	// IIC4_SDA
+
+0x090 and 0x098 are the FUNCSEL registers of PWR_WAKEUP0 and PWR_BUTTON1 in
+mainline's pinctrl-sg2002.c, and CVITek's pad table agrees on the function
+number (PWR_WAKEUP0__IIC4_SCL = 5, PWR_BUTTON1__IIC4_SDA = 5). Writing them
+here leaves the pads already muxed when Linux starts, so the kernel node
+needs no pinctrl-0 and never invokes the code path that refuses it.
+
+Note these are the RTC-domain power-button/wakeup pads; muxing them to IIC4
+gives up those functions. That is the routing this board uses -- i2c4 comes
+out nowhere else on it.
+
+Upstream-Status: Inappropriate [board-specific pad routing; upstream should
+grow a working pinctrl description instead]
+---
+--- a/board/sophgo/licheerv_nano/board.c
++++ b/board/sophgo/licheerv_nano/board.c
+@@ -5,10 +5,26 @@
+ 
+ #include <dm/lists.h>
+ #include <fdt_support.h>
++#include <asm/io.h>
+ #include <linux/types.h>
+ 
+ #include "ethernet.h"
+ 
++/*
++ * Pad function-select registers (pinctrl@3001000) for the two pads this board
++ * routes i2c4 to, and the IIC4 function number they take. See the patch header
++ * for why this is done here rather than through the kernel's pinctrl.
++ */
++#define PAD_FUNCSEL_PWR_WAKEUP0		0x03001090	/* -> IIC4_SCL */
++#define PAD_FUNCSEL_PWR_BUTTON1		0x03001098	/* -> IIC4_SDA */
++#define PAD_FUNC_IIC4			0x5
++
++static void licheerv_nano_mux_i2c4(void)
++{
++	writel(PAD_FUNC_IIC4, (void __iomem *)PAD_FUNCSEL_PWR_WAKEUP0);
++	writel(PAD_FUNC_IIC4, (void __iomem *)PAD_FUNCSEL_PWR_BUTTON1);
++}
++
+ int board_init(void)
+ {
+ 	if (IS_ENABLED(CONFIG_SYSRESET_CV1800B))
+@@ -26,6 +42,13 @@
+ 	 */
+ 	cv1800b_ephy_init();
+ 
++	/*
++	 * Mux the IIC4 pads for the LT6911C HDMI bridge. Must happen before
++	 * Linux starts: the kernel's i2c4 node deliberately carries no
++	 * pinctrl-0, because pinctrl-cv18xx refuses this pad/function pair.
++	 */
++	licheerv_nano_mux_i2c4();
++
+ 	return 0;
+ }
+ 
