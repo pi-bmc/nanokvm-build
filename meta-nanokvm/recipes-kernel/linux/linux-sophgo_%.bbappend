@@ -22,14 +22,51 @@ FILESEXTRAPATHS:prepend := "${THISDIR}/files:"
 #        without it dtc fails "Reference to non-existent node or label usbphy".
 #   0003 local board tweaks on top of 0001: &usb -> dr_mode "peripheral" (gadget
 #        role) and i2c1 on the repurposed SDIO1 pads for the slave EEPROM.
-#   0007 the internal EPHY driver: the full CVITEK bring-up sequence, moved
-#        here from U-Boot (meta-sophgo's 0004 no longer calls it) so the PHY's
-#        analog front end stays powered down for the whole of boot and only
-#        comes up when the interface is opened. Enabled by CONFIG_CV1800B_PHY.
-#   0008 declares the PHY in the board DTS. Load-bearing, not a convenience:
-#        with U-Boot no longer writing MII_PHYSID1/2 there is no id to probe,
-#        so without it phylib creates no device and eth0 never opens. Must
-#        follow 0003, the last patch to touch the board .dts.
+#        (0007 and 0008 are gone: an out-of-tree PHY driver for the internal
+#        EPHY, and the DTS node that declared it with a hardcoded id. Ethernet
+#        is back to upstream code only -- U-Boot's board_init() runs the vendor
+#        bring-up (meta-sophgo's 0004, exactly what milkv_duo does) and writes
+#        MII_PHYSID1/2, so phylib reads a real id off the mdio-mux and binds
+#        genphy to upstream's own "ethernet-phy-ieee802.3-c22" internal_ephy in
+#        cv180x.dtsi. Neither patch was what kept eth0 from appearing: the MAC
+#        never probed at all because CONFIG_DWMAC_GENERIC was a module. See
+#        nanokvm.cfg.)
+#   0009 restores drivers/staging/android/ion (deleted upstream in 5.11) with
+#        CVITek's heaps, ported to 6.18. It is the floor of the local HDMI
+#        capture pipeline: soph_base/vb, soph_mipi_rx, soph_vi, soph_vpss and
+#        the WAVE4 VPU in cvi_vc_drv all allocate through it via
+#        sys_ion_alloc()/sys_ion_free(), and mainline has no replacement for
+#        any of that stack.
+#
+#        It must be built in, not loaded as a module, and that is forced rather
+#        than chosen: ION calls cma_alloc(), cma_release(), cma_get_name(),
+#        cma_for_each_area(), plist_add() and arch_sync_dma_for_device(), none
+#        of which mainline exports to modules -- as a .ko every one of them is
+#        undefined at modpost. Hence a kernel patch here and not a module
+#        recipe. Touches only drivers/staging, so it is independent of the
+#        0001/0003 DTS ordering above.
+#   0010 exports arch_sync_dma_for_device()/_for_cpu(). The same multimedia
+#        modules do their own cache maintenance against physical addresses
+#        (sys_cache_flush()/sys_cache_invalidate(), and the vpss CMDQ path);
+#        mainline exports neither, and the dma_sync_single_for_*() alternative
+#        needs a struct device and dma_addr_t that these ION-carveout physical
+#        addresses do not carry. Without it cv181x_sys and cv181x_vpss fail at
+#        modpost. Independent of everything above.
+#   0011 declares the multimedia devices themselves: base, sys, cif (the CSI-2
+#        receiver), vi, vpss, vcodec, jpu, cvi_vc_drv, plus the ION carveout
+#        they allocate from. Without it the soph-media modules build but never
+#        probe. MUST follow 0003 -- it appends to the same board .dts 0003 is
+#        the last patch to edit -- and its ION carveout address must stay in
+#        sync with meta-sophgo's cvi_board_memmap.h (CVIMMAP_ION_ADDR/_SIZE),
+#        which is also what the FSBL and U-Boot reserve, and with the
+#        bootm_size cap in u-boot's 0006: U-Boot relocates the initrd and FDT
+#        to the top of usable DRAM, which lands inside this carveout and makes
+#        the kernel reject the no-map reservation outright.
+#   0012 enables i2c4, the LT6911C HDMI bridge's control bus, and pins the i2c
+#        bus numbers with aliases. Without it the board has exactly one i2c bus
+#        and nothing can reach the bridge to read the input resolution or write
+#        EDID, so capture cannot be brought up at all. MUST follow 0003 and
+#        0011 -- it appends to the same board .dts they edit.
 # nanokvm.cfg is merged in do_configure:append below.
 SRC_URI:append:sg2002-licheervnano = " \
     file://0001-apply-dts-usb-dev.patch \
@@ -37,8 +74,10 @@ SRC_URI:append:sg2002-licheervnano = " \
     file://0003-nanokvm-board-dts.patch \
     file://0005-nanokvm-cv1800-reboot.patch \
     file://0006-usb-dwc2-cv1800-enable-gadget-dma.patch \
-    file://0007-net-phy-sophgo-cv1800b-internal-ephy.patch \
-    file://0008-riscv-dts-sophgo-nanokvm-declare-cv1800b-ephy.patch \
+    file://0009-staging-android-restore-ion-cvitek.patch \
+    file://0010-riscv-export-arch-sync-dma.patch \
+    file://0011-riscv-dts-sophgo-cv181x-multimedia.patch \
+    file://0012-riscv-dts-sophgo-nanokvm-enable-i2c4.patch \
     file://nanokvm.cfg \
     "
 

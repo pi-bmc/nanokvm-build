@@ -1,5 +1,5 @@
 From: NanoKVM build <nbatkins@gmail.com>
-Subject: [PATCH] licheerv-nano: define ramdisk_addr_r for extlinux INITRD
+Subject: [PATCH] licheerv-nano: define ramdisk_addr_r and bound bootm relocation
 
 The NanoKVM image boots via extlinux with a separate initramfs (INITRD
 /initramfs), but mainline's licheerv_nano.h env defines only
@@ -13,13 +13,31 @@ the board stalled at the U-Boot prompt right after "Retrieving file:
 scriptaddr (0x80c00000), the kernel at 0x81000000 (~11 MiB Image, and
 booti relocates it down to 0x80200000), and the FDT at 0x82000000.
 
+bootm_size caps where boot_ramdisk_high()/boot_relocate_fdt() may then
+move them. ramdisk_addr_r is only the *load* address; with no bound U-Boot
+relocates both to the top of usable DRAM, which put the ramdisk at
+0x8e562000 and the FDT at 0x8e55b000 -- inside the 105 MiB ION carveout at
+0x89500000 that the kernel DTS reserves for the video pipeline (meta-nanokvm
+patch 0011, mirroring CVIMMAP_ION_ADDR). The kernel reserves initrd and FDT
+first, so the no-map region then overlapped an existing reservation and was
+rejected outright:
+
+  OF: reserved mem: Reserved memory: failed to reserve memory for node
+      'ion@89500000': base 0x0000000089500000, size 105 MiB
+
+leaving the carveout heap registered with base 0x0 size 0x0 -- every
+sys_ion_alloc() in the capture stack would fail. 0x9500000 bounds the bootm
+region to [0x80000000, 0x89500000), i.e. exactly up to the carveout base, so
+it must stay in sync with CVIMMAP_ION_ADDR and the DTS reservation.
+
 Upstream-Status: Inappropriate [NanoKVM boot-flow specific; upstream
 should grow a full distro-boot memory map instead]
 ---
 --- a/include/configs/licheerv_nano.h
 +++ b/include/configs/licheerv_nano.h
-@@ -18,6 +18,7 @@
+@@ -18,6 +18,8 @@
  								"baudrate=115200\0" \
++								"bootm_size=0x9500000\0" \
  								"fdt_addr_r=0x82000000\0" \
  								"kernel_addr_r=0x81000000\0" \
 +								"ramdisk_addr_r=0x84000000\0" \

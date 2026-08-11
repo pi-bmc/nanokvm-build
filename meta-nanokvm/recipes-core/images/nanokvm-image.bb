@@ -198,6 +198,19 @@ IMAGE_INSTALL:append = " \
     nanokvm-server \
     "
 
+# --- Local HDMI capture (CVITek multimedia stack) ---
+# The nine out-of-tree modules that drive VI -> VPSS -> VENC on the SG2002,
+# forward-ported to 6.18 (meta-sophgo/recipes-kernel/soph-media). They are
+# installed but deliberately NOT auto-loaded: load order is a real dependency
+# chain (sys, base, snsr_i2c, cif, vi, vpss, vcodec, jpeg, cvi_vc_drv) and the
+# service that owns capture brings the pipeline up, so there is no modules-load
+# drop-in and no modprobe alias. ION is not here -- it is built into the kernel
+# (linux-sophgo bbappend patch 0009), because it calls symbols mainline does
+# not export to modules.
+IMAGE_INSTALL:append = " \
+    soph-media \
+    "
+
 # --- Raspberry Pi boot image (served to the managed Pi via the USB gadget) ---
 # rpi-firmware-seed stages the aarch64 U-Boot image built by the "rpi"
 # multiconfig (the vendored meta-raspberrypi layer) into

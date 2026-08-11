@@ -1,0 +1,18 @@
+#ccflags-y += -save-temps=obj
+ifeq ("$(CVIARCH)", "CV181X")
+ccflags-y += -D__CV181X__
+endif
+ifeq ("$(CVIARCH)", "CV180X")
+ccflags-y += -D__CV180X__
+endif
+# -Wmissing-prototypes became a default kernel build warning in 6.x, and these
+# vendor Makefiles add their own -Werror, so ~50 non-static helpers that built
+# fine on 5.10 now break the build. The functions are unchanged and correct;
+# only the warning policy moved. Disable it rather than sprinkling `static`
+# across vendor code we do not otherwise touch -- that would be a large,
+# untestable diff for a style warning, and some of these symbols are genuinely
+# cross-file. Everything else (-Wall -Wextra -Werror) stays on.
+# Local stubs for vendor-kernel headers that mainline does not have
+# (currently linux/streamline_annotate.h). See compat/linux/ for the rationale.
+ccflags-y += -I$(src)/../compat
+ccflags-y += -Wno-missing-prototypes -Wno-missing-declarations

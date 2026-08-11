@@ -1,0 +1,38 @@
+From: NanoKVM BSP <nanokvm@local>
+Subject: [PATCH] riscv: mm: export arch_sync_dma_for_{device,cpu}
+
+The CVITek multimedia modules do their own cache maintenance against physical
+addresses: sys_cache_flush()/sys_cache_invalidate() in cv181x_sys and the CMDQ
+path in cv181x_vpss call arch_sync_dma_for_device() directly. Ten call sites
+across the stack, all physical-address based.
+
+Nothing exported does the same job. The dma_sync_single_for_*() API needs a
+struct device and a dma_addr_t, which these paths do not carry -- the buffers
+come from the ION carveout as bare physical addresses.
+
+Export the two DMA cache hooks so the modules can be built out-of-tree. This
+is deliberately narrow: it exposes existing arch functionality that is already
+called from any driver using the streaming DMA API, and adds no new behaviour.
+
+Signed-off-by: NanoKVM BSP <nanokvm@local>
+---
+diff --git a/arch/riscv/mm/dma-noncoherent.c b/arch/riscv/mm/dma-noncoherent.c
+index cb89d7e0ba88..be784b34cc81 100644
+--- a/arch/riscv/mm/dma-noncoherent.c
++++ b/arch/riscv/mm/dma-noncoherent.c
+@@ -94,6 +94,7 @@ void arch_sync_dma_for_device(phys_addr_t paddr, size_t size,
+ 		break;
+ 	}
+ }
++EXPORT_SYMBOL_GPL(arch_sync_dma_for_device);
+ 
+ void arch_sync_dma_for_cpu(phys_addr_t paddr, size_t size,
+ 			   enum dma_data_direction dir)
+@@ -113,6 +114,7 @@ void arch_sync_dma_for_cpu(phys_addr_t paddr, size_t size,
+ 		break;
+ 	}
+ }
++EXPORT_SYMBOL_GPL(arch_sync_dma_for_cpu);
+ 
+ void arch_dma_prep_coherent(struct page *page, size_t size)
+ {

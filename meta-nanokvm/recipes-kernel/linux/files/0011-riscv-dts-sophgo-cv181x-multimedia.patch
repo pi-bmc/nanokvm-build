@@ -1,0 +1,275 @@
+From: NanoKVM BSP <nanokvm@local>
+Subject: [PATCH] riscv: dts: sophgo: declare the CV181x multimedia pipeline
+
+Adds the device nodes the CVITek capture/encode stack binds to: base (vip_sys),
+sys, cif (the MIPI CSI-2 receiver, cvi_mipi_rx), vi, vpss, vcodec, jpu and
+cvi_vc_drv, plus the ION carveout they all allocate from. Without these the
+modules in meta-sophgo/recipes-kernel/soph-media build but never probe.
+
+Register windows, clocks, resets and interrupts come from the vendor DTS for
+this exact board (LicheeRV-Nano-Build build/boards/default/dts/sg200x/
+soph_base{,_riscv}.dtsi). Two translations were needed:
+
+  - Interrupts. The vendor RISC-V DTS writes raw PLIC numbers while mainline
+    wraps the peripheral number in SOC_PERIPHERAL_IRQ(nr) = nr + 16. Verified
+    against a known device before trusting it: uart0 is GIC_SPI 28 in the
+    vendor ARM DTS, PLIC 44 in the vendor RISC-V DTS, and
+    SOC_PERIPHERAL_IRQ(28) in mainline. The multimedia numbers then check out
+    on both sides -- vi GIC_SPI 8 / PLIC 24, vpss 9 / 25, cif 10,11 / 26,27,
+    vcodec 6,5,7 / 22,21,23, jpu 4 / 20.
+
+  - Address cells. The vendor soc bus is #address-cells = <2>; mainline's is
+    <1>, so the reg entries lose their high word.
+
+Clocks map one-for-one onto mainline's sophgo,cv1800.h (CV181X_CLK_x -> CLK_x);
+the CV181x clock driver already carries the whole VIP and codec tree.
+
+The reset IDs are the one gap. Mainline's cv18xx-reset.h stops short of the
+PHY block, so RST_DSIPHY..RST_CSIPHY1RST_APB (68..73) are added from the vendor
+cv181x-resets.h. The numbering is confirmed identical on both sides either
+side of the gap -- RST_H264C=3/RST_JPEG=4/RST_H265C=5/RST_VIPSYS=6 below it,
+RST_UART4=74/RST_GPIO3=75 above it -- so these slot into the hole rather than
+renumbering anything.
+
+Everything is status = "disabled" in the SoC dtsi and enabled per-board, so
+other CV181x boards are unaffected.
+
+Signed-off-by: NanoKVM BSP <nanokvm@local>
+---
+diff --git a/arch/riscv/boot/dts/sophgo/cv181x.dtsi b/arch/riscv/boot/dts/sophgo/cv181x.dtsi
+index bbdb30653e9a..a109db7611bb 100644
+--- a/arch/riscv/boot/dts/sophgo/cv181x.dtsi
++++ b/arch/riscv/boot/dts/sophgo/cv181x.dtsi
+@@ -17,5 +17,128 @@ emmc: mmc@4300000 {
+ 			clock-names = "core", "bus";
+ 			status = "disabled";
+ 		};
++
++		vip_base: base@a0c8000 {
++			compatible = "cvitek,base";
++			reg = <0xa0c8000 0x20>;
++			reg-names = "vip_sys";
++			status = "disabled";
++		};
++
++		vip_sys: vip-sys {
++			compatible = "cvitek,sys";
++			status = "disabled";
++		};
++
++		mipi_rx: cif@a0c2000 {
++			compatible = "cvitek,cif";
++			reg = <0xa0c2000 0x2000>, <0xa0d0000 0x1000>,
++			      <0xa0c4000 0x2000>, <0xa0c6000 0x2000>,
++			      <0x3001c30 0x30>;
++			reg-names = "csi_mac0", "csi_wrap0", "csi_mac1",
++				    "csi_mac2", "pad_ctrl";
++			interrupts = <SOC_PERIPHERAL_IRQ(10) IRQ_TYPE_LEVEL_HIGH>,
++				     <SOC_PERIPHERAL_IRQ(11) IRQ_TYPE_LEVEL_HIGH>;
++			interrupt-names = "csi0", "csi1";
++			resets = <&rst RST_CSIPHY0>, <&rst RST_CSIPHY1>,
++				 <&rst RST_CSIPHY0RST_APB>, <&rst RST_CSIPHY1RST_APB>;
++			reset-names = "phy0", "phy1", "phy-apb0", "phy-apb1";
++			clocks = <&clk CLK_CAM0>, <&clk CLK_CAM1>,
++				 <&clk CLK_SRC_VIP_SYS_2>, <&clk CLK_MIPIMPLL>,
++				 <&clk CLK_DISPPLL>, <&clk CLK_FPLL>;
++			clock-names = "clk_cam0", "clk_cam1", "clk_sys_2",
++				      "clk_mipimpll", "clk_disppll", "clk_fpll";
++			status = "disabled";
++		};
++
++		vi: vi@a000000 {
++			compatible = "cvitek,vi";
++			reg = <0xa000000 0x80000>;
++			interrupts = <SOC_PERIPHERAL_IRQ(8) IRQ_TYPE_LEVEL_HIGH>;
++			interrupt-names = "isp";
++			clocks = <&clk CLK_SRC_VIP_SYS_0>, <&clk CLK_SRC_VIP_SYS_1>,
++				 <&clk CLK_SRC_VIP_SYS_2>, <&clk CLK_SRC_VIP_SYS_3>,
++				 <&clk CLK_AXI_VIP>, <&clk CLK_CSI_BE_VIP>,
++				 <&clk CLK_RAW_VIP>, <&clk CLK_ISP_TOP_VIP>,
++				 <&clk CLK_CSI_MAC0_VIP>, <&clk CLK_CSI_MAC1_VIP>,
++				 <&clk CLK_CSI_MAC2_VIP>;
++			clock-names = "clk_sys_0", "clk_sys_1", "clk_sys_2",
++				      "clk_sys_3", "clk_axi", "clk_csi_be",
++				      "clk_raw", "clk_isp_top", "clk_csi_mac0",
++				      "clk_csi_mac1", "clk_csi_mac2";
++			clock-freq-vip-sys1 = <300000000>;
++			status = "disabled";
++		};
++
++		vpss: vpss@a080000 {
++			compatible = "cvitek,vpss";
++			reg = <0xa080000 0x10000>, <0xa0d1000 0x100>;
++			reg-names = "sc";
++			interrupts = <SOC_PERIPHERAL_IRQ(9) IRQ_TYPE_LEVEL_HIGH>;
++			interrupt-names = "sc";
++			clocks = <&clk CLK_SRC_VIP_SYS_0>, <&clk CLK_SRC_VIP_SYS_1>,
++				 <&clk CLK_SRC_VIP_SYS_2>, <&clk CLK_IMG_D_VIP>,
++				 <&clk CLK_IMG_V_VIP>, <&clk CLK_SC_TOP_VIP>,
++				 <&clk CLK_SC_D_VIP>, <&clk CLK_SC_V1_VIP>,
++				 <&clk CLK_SC_V2_VIP>, <&clk CLK_SC_V3_VIP>;
++			clock-names = "clk_sys_0", "clk_sys_1", "clk_sys_2",
++				      "clk_img_d", "clk_img_v", "clk_sc_top",
++				      "clk_sc_d", "clk_sc_v1", "clk_sc_v2",
++				      "clk_sc_v3";
++			clock-freq-vip-sys1 = <300000000>;
++			status = "disabled";
++		};
++
++		vcodec: vcodec@b020000 {
++			compatible = "cvitek,asic-vcodec";
++			reg = <0xb020000 0x10000>, <0xb010000 0x10000>,
++			      <0xb030000 0x100>, <0xb058000 0x100>,
++			      <0xb050000 0x400>;
++			reg-names = "h265", "h264", "vc_ctrl", "vc_sbm",
++				    "vc_addr_remap";
++			interrupts = <SOC_PERIPHERAL_IRQ(6) IRQ_TYPE_LEVEL_HIGH>,
++				     <SOC_PERIPHERAL_IRQ(5) IRQ_TYPE_LEVEL_HIGH>,
++				     <SOC_PERIPHERAL_IRQ(7) IRQ_TYPE_LEVEL_HIGH>;
++			interrupt-names = "h265", "h264", "sbm";
++			clocks = <&clk CLK_AXI_VIDEO_CODEC>, <&clk CLK_H264C>,
++				 <&clk CLK_APB_H264C>, <&clk CLK_H265C>,
++				 <&clk CLK_APB_H265C>, <&clk CLK_VC_SRC0>,
++				 <&clk CLK_VC_SRC1>, <&clk CLK_VC_SRC2>,
++				 <&clk CLK_CFG_REG_VC>;
++			clock-names = "clk_axi_video_codec", "clk_h264c",
++				      "clk_apb_h264c", "clk_h265c",
++				      "clk_apb_h265c", "clk_vc_src0",
++				      "clk_vc_src1", "clk_vc_src2",
++				      "clk_cfg_reg_vc";
++			status = "disabled";
++		};
++
++		jpu: jpeg@b000000 {
++			compatible = "cvitek,asic-jpeg";
++			reg = <0xb000000 0x300>, <0xb030000 0x100>,
++			      <0xb058000 0x100>;
++			reg-names = "jpeg", "vc_ctrl", "vc_sbm";
++			interrupts = <SOC_PERIPHERAL_IRQ(4) IRQ_TYPE_LEVEL_HIGH>;
++			interrupt-names = "jpeg";
++			clocks = <&clk CLK_AXI_VIDEO_CODEC>, <&clk CLK_JPEG>,
++				 <&clk CLK_APB_JPEG>, <&clk CLK_VC_SRC0>,
++				 <&clk CLK_VC_SRC1>, <&clk CLK_VC_SRC2>,
++				 <&clk CLK_CFG_REG_VC>;
++			clock-names = "clk_axi_video_codec", "clk_jpeg",
++				      "clk_apb_jpeg", "clk_vc_src0",
++				      "clk_vc_src1", "clk_vc_src2",
++				      "clk_cfg_reg_vc";
++			resets = <&rst RST_JPEG>;
++			reset-names = "jpeg";
++			status = "disabled";
++		};
++
++		cvi_vc_drv: vc-drv@b030000 {
++			compatible = "cvitek,cvi_vc_drv";
++			reg = <0xb030000 0x100>, <0xb058000 0x100>,
++			      <0xb050000 0x400>;
++			reg-names = "vc_ctrl", "vc_sbm", "vc_addr_remap";
++			status = "disabled";
++		};
+ 	};
+ };
+diff --git a/arch/riscv/boot/dts/sophgo/cv18xx-reset.h b/arch/riscv/boot/dts/sophgo/cv18xx-reset.h
+index 7e7c5ca2dbbd..ab9e04e271ec 100644
+--- a/arch/riscv/boot/dts/sophgo/cv18xx-reset.h
++++ b/arch/riscv/boot/dts/sophgo/cv18xx-reset.h
+@@ -54,6 +54,12 @@
+ #define RST_COMBO_PHY0			58
+ #define RST_SPI_NAND			61
+ #define RST_SE				62
++#define RST_DSIPHY			68
++#define RST_DSIPHYRST_APB		69
++#define RST_CSIPHY0			70
++#define RST_CSIPHY0RST_APB		71
++#define RST_CSIPHY1			72
++#define RST_CSIPHY1RST_APB		73
+ #define RST_UART4			74
+ #define RST_GPIO3			75
+ #define RST_SYSTEM			76
+--- a/arch/riscv/boot/dts/sophgo/sg2002-licheerv-nano-b.dts
++++ b/arch/riscv/boot/dts/sophgo/sg2002-licheerv-nano-b.dts
+@@ -174,3 +174,84 @@
+ &mdio {
+ 	status = "okay";
+ };
++
++/*
++ * Local HDMI capture pipeline (see meta-sophgo soph-media).
++ *
++ * The ION carveout mirrors CVIMMAP_ION_ADDR/CVIMMAP_ION_SIZE from meta-sophgo's
++ * cvi_board_memmap.h -- the same 105 MiB window the FSBL and U-Boot already
++ * reserve -- so the region has to stay in sync with that header. It is fixed
++ * rather than relocatable because the FSBL hands the same addresses to the
++ * small core.
++ *
++ * 105 MiB out of 256 MiB is a lot of RAM, and it is not optional: every frame
++ * buffer, VPSS scratch surface and encoder bitstream comes from here. Shrink it
++ * and 1080p capture stops fitting.
++ */
++/ {
++	reserved-memory {
++		#address-cells = <1>;
++		#size-cells = <1>;
++		ranges;
++
++		/*
++		 * compatible is load-bearing, not documentation: the ION heap
++		 * gets its base/size from of_reserved_mem_device_init(), which
++		 * needs rmem->ops, and those are only installed by the
++		 * RESERVEDMEM_OF_DECLARE(ion, "ion-region", ...) in patch 0009.
++		 * Without it of_reserved_mem_device_init_by_idx() bails at
++		 * "!rmem->ops" with -EINVAL and the heap comes up base 0x0
++		 * size 0x0 -- registered, and every allocation from it fails.
++		 *
++		 * no-map is right here: on riscv ion_heap_map_kernel() takes the
++		 * memremap()/ioremap() branch rather than the arm vmap-of-pages
++		 * one, so the carveout is meant to stay out of the linear map.
++		 */
++		ion_reserved: ion@89500000 {
++			compatible = "ion-region";
++			reg = <0x89500000 0x6900000>;
++			no-map;
++		};
++	};
++
++	cvitek-ion {
++		compatible = "cvitek,cvitek-ion";
++
++		heap_carveout@0 {
++			compatible = "cvitek,carveout";
++			memory-region = <&ion_reserved>;
++		};
++	};
++};
++
++&vip_base {
++	status = "okay";
++};
++
++&vip_sys {
++	status = "okay";
++};
++
++&mipi_rx {
++	status = "okay";
++};
++
++&vi {
++	status = "okay";
++};
++
++&vpss {
++	status = "okay";
++};
++
++&vcodec {
++	status = "okay";
++};
++
++&jpu {
++	status = "okay";
++};
++
++&cvi_vc_drv {
++	status = "okay";
++};

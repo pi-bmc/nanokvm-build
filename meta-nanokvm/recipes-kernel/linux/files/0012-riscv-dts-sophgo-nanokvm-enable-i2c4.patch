@@ -1,0 +1,78 @@
+From: NanoKVM BSP <nanokvm@local>
+Subject: [PATCH] riscv: dts: sophgo: nanokvm: enable i2c4 for the LT6911C
+
+The HDMI-to-CSI bridge that feeds the capture pipeline is controlled over
+i2c4 at 0x2b -- it is how the input resolution is read and the EDID written.
+Mainline leaves i2c@4040000 disabled and there is no upstream pinctrl for it,
+so nothing in the running system can reach the bridge: the board comes up with
+a single i2c bus (the slave EEPROM on i2c@4010000).
+
+The pad choice and the alias handling are both load-bearing and both are
+explained inline in the DTS rather than here, because that is where anyone
+changing them will be looking.
+
+Must follow 0003 and 0011 -- it appends to the same board .dts they edit.
+
+Not upstream -- local to this build.
+---
+--- a/arch/riscv/boot/dts/sophgo/sg2002-licheerv-nano-b.dts
++++ b/arch/riscv/boot/dts/sophgo/sg2002-licheerv-nano-b.dts
+@@ -255,3 +255,58 @@
+ &cvi_vc_drv {
+ 	status = "okay";
+ };
++
++/*
++ * i2c4 -- the control bus for the LT6911C HDMI-to-CSI bridge (0x2b).
++ *
++ * The pads are not a free choice. IIC4 can be routed to five different pad
++ * pairs on this SoC, and Sipeed's board init picks one by raw MMIO rather than
++ * by DT (LicheeRV-Nano-Build, build/boards/sg200x/sg2002_licheervnano_sd/
++ * u-boot/cvi_board_init.c):
++ *
++ *	mmio_write_32(0x03001090, 0x5);		// IIC4_SCL
++ *	mmio_write_32(0x03001098, 0x5);		// IIC4_SDA
++ *
++ * 0x090 and 0x098 are the FUNCSEL registers of PWR_WAKEUP0 and PWR_BUTTON1 in
++ * mainline's own pinctrl-sg2002.c, and CVITek's pad table agrees on the
++ * function number: PWR_WAKEUP0__IIC4_SCL = 5, PWR_BUTTON1__IIC4_SDA = 5.
++ * There is no vendor pinctrl node to copy -- the vendor BSP muxes every pad
++ * from a generated table before Linux starts -- so it is spelled out here.
++ *
++ * These are the RTC-domain power-button/wakeup pads; muxing them to IIC4 gives
++ * up those functions. They are IO_TYPE_1V8_ONLY, so there is deliberately no
++ * power-source property: pinctrl-cv18xx ignores it ("always fixed").
++ */
++&pinctrl {
++	i2c4_cfg: i2c4-cfg {
++		i2c4-pins {
++			pinmux = <PINMUX(PIN_PWR_WAKEUP0, 5)>,
++				 <PINMUX(PIN_PWR_BUTTON1, 5)>;
++			bias-pull-up;
++			drive-strength-microamp = <10800>;
++		};
++	};
++};
++
++&i2c4 {
++	pinctrl-0 = <&i2c4_cfg>;
++	pinctrl-names = "default";
++	status = "okay";
++};
++
++/*
++ * Pin BOTH bus numbers, not just i2c4. i2c_init() does
++ * of_alias_get_highest_id("i2c") and starts *dynamic* numbering above it, so
++ * declaring i2c4 alone would push the EEPROM controller (i2c@4010000, today
++ * bus 0 by dynamic allocation) to bus 5 -- silently breaking the server's
++ * /sys/bus/i2c/devices/0-1050 slave-eeprom path. i2c0 = &i2c1 is not a typo:
++ * it holds that controller at bus 0 where the config expects it, while
++ * i2c4 = &i2c4 puts the bridge at /dev/i2c-4 where the vendor EDID tooling
++ * looks for it.
++ */
++/ {
++	aliases {
++		i2c0 = &i2c1;
++		i2c4 = &i2c4;
++	};
++};
