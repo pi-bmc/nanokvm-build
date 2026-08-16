@@ -1,22 +1,38 @@
 From: NanoKVM build <nbatkins@gmail.com>
 Date: Thu, 9 Jul 2026 00:00:00 +0000
-Subject: [PATCH] licheerv-nano: derive a stable MAC from eFUSE, fix up the DT
+Subject: [PATCH] licheerv-nano: derive the stock MAC from eFUSE, fix up the DT
 
 Mainline stmmac is given no MAC for gmac0, so Linux synthesises a fresh random
 (locally-administered) address on every boot and the DHCP lease/IP cycle.
-Derive a stable per-board MAC from the immutable eFUSE (CRC of the fuse shadow
-under the registered OUI 48:da:35) and write it into the kernel device tree as
-/soc/ethernet@4070000's local-mac-address via ft_board_setup(), so stmmac uses
-it directly -- no in-kernel eFUSE driver needed. Reading the eFUSE is safe from
-U-Boot: cv1800b_ephy_init() already reads the shadow during board_init, so the
-block is clocked (a raw read from Linux stalls the bus). Enables
-CONFIG_OF_BOARD_SETUP so ft_board_setup() runs during bootm FDT setup.
+Derive a stable per-board MAC from the immutable eFUSE and write it into the
+kernel device tree as /soc/ethernet@4070000's local-mac-address via
+ft_board_setup(), so stmmac uses it directly -- no in-kernel eFUSE driver
+needed.
+
+The derivation reproduces the stock Sipeed address exactly, so a board that is
+reflashed from the vendor image to this one keeps the MAC it shipped with,
+along with any DHCP lease or reservation keyed on it. The vendor computes it in
+userspace from two buildroot init scripts (LicheeRV-Nano-Build,
+buildroot/board/cvitek/SG200X/overlay/etc/init.d):
+
+  S02devicekey:  cat /sys/class/cvi-base/base_uid > /device_key_legacy
+  S10uuid:       hex2mac 48da356f$(sha512sum /device_key_legacy | head -c 4)
+
+base_uid is scnprintf("UID: %08x_%08x\n", shadow[0x0c], shadow[0x10]) over the
+eFUSE shadow, so the address is the constant prefix 48:da:35:6f followed by the
+first two bytes of the SHA-512 of those 23 bytes. Enables CONFIG_SHA512 (which
+pulls in SHA512_LEGACY, i.e. lib/sha512.c) for sha512_csum_wd().
+
+Reading the eFUSE is safe from U-Boot: cv1800b_ephy_init() already reads the
+shadow during board_init, so the block is clocked (a raw read from Linux stalls
+the bus). Enables CONFIG_OF_BOARD_SETUP so ft_board_setup() runs during bootm
+FDT setup.
 
 Upstream-Status: Pending
 Signed-off-by: NanoKVM build <nbatkins@gmail.com>
 ---
 diff --git a/board/sophgo/licheerv_nano/board.c b/board/sophgo/licheerv_nano/board.c
-index 558bde3..2c40d3a 100644
+index 558bde3fa71..2c40d3acfee 100644
 --- a/board/sophgo/licheerv_nano/board.c
 +++ b/board/sophgo/licheerv_nano/board.c
 @@ -4,6 +4,8 @@
@@ -54,18 +70,21 @@ index 558bde3..2c40d3a 100644
 +	return 0;
 +}
 diff --git a/board/sophgo/licheerv_nano/ethernet.c b/board/sophgo/licheerv_nano/ethernet.c
-index 7f1b048..1687d00 100644
+index 7f1b04851cc..72f68b79a4e 100644
 --- a/board/sophgo/licheerv_nano/ethernet.c
 +++ b/board/sophgo/licheerv_nano/ethernet.c
-@@ -35,6 +35,7 @@
+@@ -33,8 +33,10 @@
+  *     u-boot-2021.10/board/cvitek/cv181x/board.c
+  */
  
++#include <stdio.h>
  #include <linux/io.h>
  #include <linux/types.h>
-+#include <u-boot/crc.h>
++#include <u-boot/sha512.h>
  
  /*
   * EPHY APB register block.  With APB_RW_SEL=1 the PHY MII registers are mapped
-@@ -232,3 +233,44 @@ void cv1800b_ephy_init(void)
+@@ -232,3 +234,59 @@ void cv1800b_ephy_init(void)
  
  	ephy_wr(EPHY_APB_RW_SEL, 0x0000);	/* hand MDIO back to the MAC   */
  }
@@ -75,43 +94,58 @@ index 7f1b048..1687d00 100644
 + * above already reads it (EPHY_EFUSE_VALID / EFUSE_W0 / EFUSE_W1) during
 + * board_init, so the block is clocked and readable here -- no clock-gate
 + * poking, unlike a raw read from Linux which stalls the bus.
++ *
++ * Shadow words 0x0c/0x10 are the chip UID -- the pair the vendor kernel exports
++ * as /sys/class/cvi-base/base_uid. The vendor maps the shadow at EFUSE_BASE +
++ * 0x100 and cvi_efuse_read_from_shadow(a) is a plain 32-bit read of shadow + a
++ * (linux_5.10/drivers/efuse/cv181x_efuse.c), so those words are 0x0305010c and
++ * 0x03050110 here.
 + */
 +#define EFUSE_SHADOW_BASE  0x03050100UL
-+#define EFUSE_SHADOW_SIZE  0x100
++#define EFUSE_UID_LO       0x0c
++#define EFUSE_UID_HI       0x10
 +
 +/*
-+ * Derive a stable, per-board MAC from the immutable eFUSE. The registered OUI
-+ * 48:da:35 is fixed; the low 24 bits are a CRC of the whole fuse shadow (chip
-+ * id + trims), which is unique per chip and identical across reboots/reflashes.
-+ * board.c's ft_board_setup() writes this into the kernel DT so stmmac uses it
-+ * instead of a fresh random address each boot.
++ * Reproduce the stock vendor MAC bit for bit, so a board keeps the address it
++ * shipped with -- and any DHCP lease or reservation keyed on it -- across a
++ * reflash from the Sipeed image to this one.
++ *
++ * The vendor derives it in userspace, from two buildroot init scripts
++ * (sipeed/LicheeRV-Nano-Build, buildroot/board/cvitek/SG200X/overlay/etc/init.d):
++ *
++ *   S02devicekey:  cat /sys/class/cvi-base/base_uid > /device_key_legacy
++ *   S10uuid:       hex2mac 48da356f$(sha512sum /device_key_legacy | head -c 4)
++ *
++ * base_uid's show() is scnprintf("UID: %08x_%08x\n", shadow[0x0c], shadow[0x10]),
++ * so /device_key_legacy holds exactly those 23 bytes, and the MAC is the fixed
++ * prefix 48:da:35:6f followed by the first two bytes of their SHA-512 ("head -c
++ * 4" keeps four hex digits of the digest). Only 16 bits vary per board: the
++ * fourth octet is a constant in the vendor script, not derived.
++ *
++ * board.c's ft_board_setup() writes the result into the kernel DT so stmmac
++ * uses it instead of a fresh random address each boot.
 + */
 +void cv1800b_derive_mac(u8 mac[6])
 +{
-+	unsigned char buf[EFUSE_SHADOW_SIZE];
-+	u32 crc;
-+	int i;
++	u8 digest[SHA512_SUM_LEN];
++	char uid[24];
++	int len;
 +
-+	for (i = 0; i < EFUSE_SHADOW_SIZE; i += 4) {
-+		u32 v = ephy_rd(EFUSE_SHADOW_BASE + i);
++	len = snprintf(uid, sizeof(uid), "UID: %08x_%08x\n",
++		       ephy_rd(EFUSE_SHADOW_BASE + EFUSE_UID_LO),
++		       ephy_rd(EFUSE_SHADOW_BASE + EFUSE_UID_HI));
 +
-+		buf[i + 0] = v;
-+		buf[i + 1] = v >> 8;
-+		buf[i + 2] = v >> 16;
-+		buf[i + 3] = v >> 24;
-+	}
-+
-+	crc = crc32(0, buf, EFUSE_SHADOW_SIZE);
++	sha512_csum_wd((const unsigned char *)uid, len, digest, CHUNKSZ_SHA512);
 +
 +	mac[0] = 0x48;
 +	mac[1] = 0xda;
 +	mac[2] = 0x35;
-+	mac[3] = (crc >> 16) & 0xff;
-+	mac[4] = (crc >> 8) & 0xff;
-+	mac[5] = crc & 0xff;
++	mac[3] = 0x6f;
++	mac[4] = digest[0];
++	mac[5] = digest[1];
 +}
 diff --git a/board/sophgo/licheerv_nano/ethernet.h b/board/sophgo/licheerv_nano/ethernet.h
-index 7b21f1b..6c21842 100644
+index 7b21f1b0f66..6c21842d9b7 100644
 --- a/board/sophgo/licheerv_nano/ethernet.h
 +++ b/board/sophgo/licheerv_nano/ethernet.h
 @@ -6,6 +6,9 @@
@@ -125,11 +159,12 @@ index 7b21f1b..6c21842 100644
  
  #endif
 diff --git a/configs/sipeed_licheerv_nano_defconfig b/configs/sipeed_licheerv_nano_defconfig
-index 9aa3ede..1c7876e 100644
+index 9aa3ede10c5..b825f82cf45 100644
 --- a/configs/sipeed_licheerv_nano_defconfig
 +++ b/configs/sipeed_licheerv_nano_defconfig
-@@ -45,3 +45,4 @@ CONFIG_SPI=y
+@@ -45,3 +45,5 @@ CONFIG_SPI=y
  CONFIG_CV1800B_SPIF=y
  CONFIG_SYSRESET=y
  CONFIG_SYSRESET_CV1800B=y
 +CONFIG_OF_BOARD_SETUP=y
++CONFIG_SHA512=y
