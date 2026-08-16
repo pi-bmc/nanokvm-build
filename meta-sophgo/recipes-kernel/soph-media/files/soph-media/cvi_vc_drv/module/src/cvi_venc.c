@@ -3752,6 +3752,44 @@ CVI_S32 CVI_VENC_DestroyChn(VENC_CHN VeChn)
 	pChnVars = pChnHandle->pChnVars;
 	pVbCtx = pChnHandle->pVbCtx;
 
+	/*
+	 * Stop the bind-mode handler before anything it reads is torn down.
+	 *
+	 * venc_event_handler() runs off pChnHandle and parks in down_timeout()
+	 * on vb_jobs.sem for up to a second at a time, reloading
+	 * pChnHandle->bChnEnable on every pass round that wait. The driver's
+	 * only kthread_stop() is in CVI_VENC_StopRecvFrame(), gated on
+	 * IF_WANNA_DISABLE_BIND_MODE() -- which needs sys to have run the
+	 * unbind callback first. Destroy a channel that is still bound and the
+	 * stop never happens, so the MEM_FREE() at the end of this function
+	 * vfree()s the context out from under a live thread. vfree() unmaps the
+	 * pages rather than leaving them stale, so what follows is a hard oops
+	 * on the next wakeup -- a byte load of bChnEnable -- not a quiet read of
+	 * rubbish. base_mod_jobs_exit() just below is the same hazard one step
+	 * earlier, since it tears down the queue the handler pops from, so this
+	 * has to precede that and not merely the free.
+	 *
+	 * Clearing the flag and posting both semaphores is what actually lets
+	 * the thread reach its exit: kthread_stop()'s wake_up_process() does not
+	 * break a task out of down_interruptible()/down_timeout() on its own.
+	 * Clearing currBindMode matters for the opposite reason -- venc_vb_ctx[]
+	 * is a global that outlives the channel, and a stale TRUE leaves
+	 * IF_WANNA_ENABLE_BIND_MODE() false forever, so the next channel created
+	 * on this index would never get a handler at all.
+	 *
+	 * StartRecvFrame() leaves an ERR_PTR in ->thread when kthread_run()
+	 * fails, which is why NULL alone is not a sufficient guard.
+	 */
+	if (pVbCtx->thread && !IS_ERR(pVbCtx->thread)) {
+		pChnHandle->bChnEnable = CVI_FALSE;
+		SEMA_POST(&pChnVars->sem_release);
+		SEMA_POST(&pVbCtx->vb_jobs.sem);
+		kthread_stop(pVbCtx->thread);
+		pVbCtx->thread = NULL;
+		pVbCtx->currBindMode = CVI_FALSE;
+		CVI_VENC_SYNC("venc_event_handler stopped\n");
+	}
+
 	chn.s32ChnId = pChnHandle->VeChn;
 	base_mod_jobs_exit(chn, CHN_TYPE_IN);
 
