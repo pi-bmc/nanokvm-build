@@ -21,3 +21,5 @@ poky/
 meta-openembedded/
 meta-riscv/
 build/
+
+*.log
