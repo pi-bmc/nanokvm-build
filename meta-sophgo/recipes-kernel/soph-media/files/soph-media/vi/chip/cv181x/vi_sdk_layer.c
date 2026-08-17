@@ -28,6 +28,23 @@ static CVI_U32 dis_i_frm_num[VI_MAX_DEV_NUM] = { 0 };
 static CVI_U32 dis_flag[VI_MAX_DEV_NUM] = { 0 };
 static wait_queue_head_t dis_wait_q[VI_MAX_DEV_NUM];
 static VI_DEV_TIMING_ATTR_S stTimingAttr[VI_MAX_DEV_NUM];
+
+/* Every SDK backend below dereferences gvdev, but its only assignment used
+ * to be the top of vi_sdk_ctrl() -- fine for the ioctl path, a guaranteed
+ * NULL deref for an in-kernel caller that never goes through the char
+ * device. The probe path (vi_create_instance) now publishes the device here
+ * so kernel callers and the ioctl path see the same pointer.
+ */
+struct cvi_vi_dev *vi_sdk_get_vdev(void)
+{
+	return gvdev;
+}
+
+void vi_sdk_set_vdev(struct cvi_vi_dev *vdev)
+{
+	gvdev = vdev;
+}
+
 /****************************************************************************
  * SDK layer APIs
  ****************************************************************************/

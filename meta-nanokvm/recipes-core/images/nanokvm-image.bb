@@ -199,16 +199,31 @@ IMAGE_INSTALL:append = " \
     "
 
 # --- Local HDMI capture (CVITek multimedia stack) ---
-# The nine out-of-tree modules that drive VI -> VPSS -> VENC on the SG2002,
-# forward-ported to 6.18 (meta-sophgo/recipes-kernel/soph-media). They are
-# installed but deliberately NOT auto-loaded: load order is a real dependency
-# chain (sys, base, snsr_i2c, cif, vi, vpss, vcodec, jpeg, cvi_vc_drv) and the
-# service that owns capture brings the pipeline up, so there is no modules-load
-# drop-in and no modprobe alias. ION is not here -- it is built into the kernel
-# (linux-sophgo bbappend patch 0009), because it calls symbols mainline does
-# not export to modules.
+# The out-of-tree modules that drive VI -> VPSS -> VENC on the SG2002,
+# forward-ported to 6.18 (meta-sophgo/recipes-kernel/soph-media), plus the
+# soph_v4l2 media-controller front-end that exposes them as /dev/media0 +
+# /dev/video0. They are installed but deliberately NOT auto-loaded: load
+# order is a real dependency chain (sys, base, snsr_i2c, cif, vi, vpss,
+# vcodec, jpeg, cvi_vc_drv, v4l2) and the service that owns capture brings
+# the pipeline up, so there is no modules-load drop-in and no modprobe
+# alias. ION is not here -- it is built into the kernel (linux-sophgo
+# bbappend patch 0009), because it calls symbols mainline does not export to
+# modules.
+#
+# The kernel-module-* packages are the in-tree V4L2 core soph_v4l2 links
+# against (videodev, mc, videobuf2*) -- kernel modules are never installed
+# implicitly, and without them the front-end cannot load. Listed one by one
+# rather than pulling the kernel-modules meta package, which would drag in
+# every =m symbol the fragment ever creates (vimc among them, which is a
+# kconfig anchor, not a runtime dependency -- see nanokvm.cfg).
 IMAGE_INSTALL:append = " \
     soph-media \
+    kernel-module-videodev \
+    kernel-module-mc \
+    kernel-module-videobuf2-common \
+    kernel-module-videobuf2-v4l2 \
+    kernel-module-videobuf2-memops \
+    kernel-module-videobuf2-vmalloc \
     "
 
 # --- Raspberry Pi boot image (served to the managed Pi via the USB gadget) ---

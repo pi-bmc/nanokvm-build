@@ -1474,10 +1474,14 @@ static int _init_resources(struct platform_device *pdev)
 	return rc;
 }
 
-static int vpss_open(struct inode *inode, struct file *filep)
+/* Set at probe for the kernel-caller open/release below: the misc device's
+ * container is only reachable from a struct file, which an in-kernel
+ * consumer does not have.
+ */
+static struct cvi_vip_dev *g_vpss_dev;
+
+static int _vpss_open_common(struct cvi_vip_dev *dev)
 {
-	struct cvi_vip_dev *dev =
-		container_of(filep->private_data, struct cvi_vip_dev, miscdev);
 	struct cvi_img_vdev *idev;
 	struct cvi_sc_vdev *sdev;
 	int i, j;
@@ -1541,10 +1545,21 @@ static int vpss_open(struct inode *inode, struct file *filep)
 	return 0;
 }
 
-static int vpss_release(struct inode *inode, struct file *filep)
+static int vpss_open(struct inode *inode, struct file *filep)
 {
 	struct cvi_vip_dev *dev =
 		container_of(filep->private_data, struct cvi_vip_dev, miscdev);
+
+	return _vpss_open_common(dev);
+}
+
+int vpss_open_kernel(void)
+{
+	return _vpss_open_common(g_vpss_dev);
+}
+
+static int _vpss_release_common(struct cvi_vip_dev *dev)
+{
 	int i;
 
 	pr_info("vpss_release\n");
@@ -1566,6 +1581,19 @@ static int vpss_release(struct inode *inode, struct file *filep)
 	}
 
 	return 0;
+}
+
+static int vpss_release(struct inode *inode, struct file *filep)
+{
+	struct cvi_vip_dev *dev =
+		container_of(filep->private_data, struct cvi_vip_dev, miscdev);
+
+	return _vpss_release_common(dev);
+}
+
+int vpss_release_kernel(void)
+{
+	return _vpss_release_common(g_vpss_dev);
 }
 
 static const struct file_operations vpss_fops = {
@@ -1608,6 +1636,7 @@ static int cvi_vpss_probe(struct platform_device *pdev)
 	mutex_init(&dev->mutex);
 
 	dev_set_drvdata(&pdev->dev, dev);
+	g_vpss_dev = dev;
 
 	// get hw-resources
 	rc = _init_resources(pdev);

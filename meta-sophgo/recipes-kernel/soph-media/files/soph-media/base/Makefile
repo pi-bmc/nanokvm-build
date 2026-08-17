@@ -1,6 +1,6 @@
 include $(PWD)/../Makefile.interdrv.param
 
-$(CVIARCH_L)_base-objs = base.o \
+$(MODPREFIX)_base-objs = base.o \
 				chip/$(CVIARCH_L)/vip_sys.o \
 				reg.o \
 				cvi_vb_proc.o \
@@ -9,7 +9,7 @@ $(CVIARCH_L)_base-objs = base.o \
 				base_context.o \
 				vb.o
 
-obj-m += $(CVIARCH_L)_base.o
+obj-m += $(MODPREFIX)_base.o
 
 ccflags-y += -I$(srctree)/drivers/tee \
              -I$(PWD)/../include/common/uapi/ \

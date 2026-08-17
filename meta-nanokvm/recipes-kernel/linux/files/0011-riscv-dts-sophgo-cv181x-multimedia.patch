@@ -44,6 +44,14 @@ side of the gap -- RST_H264C=3/RST_JPEG=4/RST_H265C=5/RST_VIPSYS=6 below it,
 RST_UART4=74/RST_GPIO3=75 above it -- so these slot into the hole rather than
 renumbering anything.
 
+The RTC-domain GPIO bank (gpio@5021000, "porte") is added alongside: mainline
+stops at gpio0..3, and the stock firmware's DTB -- authoritative for this
+board -- routes the LT6911 bridge's reset to its pin 1 (cif "snsr-reset",
+active low). The property is declared on the board's cif node exactly as
+stock does; when a reset is pulsed is the v4l2 front-end's decision
+(bridge_reset= on soph_v4l2, default recovery-only), because a bridge reset
+reboots its MCU and toggles HPD to the managed host.
+
 Everything is status = "disabled" in the SoC dtsi and enabled per-board, so
 other CV181x boards are unaffected.
 
@@ -53,10 +61,34 @@ diff --git a/arch/riscv/boot/dts/sophgo/cv181x.dtsi b/arch/riscv/boot/dts/sophgo
 index bbdb30653e9a..a109db7611bb 100644
 --- a/arch/riscv/boot/dts/sophgo/cv181x.dtsi
 +++ b/arch/riscv/boot/dts/sophgo/cv181x.dtsi
-@@ -17,5 +17,130 @@ emmc: mmc@4300000 {
+@@ -17,5 +17,154 @@ emmc: mmc@4300000 {
  			clock-names = "core", "bus";
  			status = "disabled";
  		};
++
++		/* The RTC-domain GPIO bank (PWR_GPIO pads, "porte"), absent from
++		 * mainline. Declared for pin 1, the LT6911 bridge's hardware
++		 * reset line on the NanoKVM -- see the board dts below. IRQ from
++		 * the stock DTB (raw PLIC 70) via the same +16 translation as
++		 * the multimedia nodes.
++		 */
++		gpio4: gpio@5021000 {
++			compatible = "snps,dw-apb-gpio";
++			reg = <0x5021000 0x1000>;
++			#address-cells = <1>;
++			#size-cells = <0>;
++
++			porte: gpio-controller@0 {
++				compatible = "snps,dw-apb-gpio-port";
++				gpio-controller;
++				#gpio-cells = <2>;
++				ngpios = <32>;
++				reg = <0>;
++				interrupt-controller;
++				#interrupt-cells = <2>;
++				interrupts = <SOC_PERIPHERAL_IRQ(54) IRQ_TYPE_LEVEL_HIGH>;
++			};
++		};
 +
 +		vip_base: base@a0c8000 {
 +			compatible = "cvitek,base";
@@ -203,7 +235,7 @@ index 7e7c5ca2dbbd..ab9e04e271ec 100644
  #define RST_SYSTEM			76
 --- a/arch/riscv/boot/dts/sophgo/sg2002-licheerv-nano-b.dts
 +++ b/arch/riscv/boot/dts/sophgo/sg2002-licheerv-nano-b.dts
-@@ -174,3 +174,84 @@
+@@ -174,3 +174,94 @@
  &mdio {
  	status = "okay";
  };
@@ -266,6 +298,16 @@ index 7e7c5ca2dbbd..ab9e04e271ec 100644
 +};
 +
 +&mipi_rx {
++	/*
++	 * PWR_GPIO1 is the LT6911 bridge's hardware reset, active low --
++	 * taken from the stock firmware's DTB, which is authoritative for
++	 * this board. The cif driver requests the pin at probe; nothing
++	 * pulses it on its own. The v4l2 front-end decides when a reset is
++	 * appropriate (bridge_reset= on soph_v4l2): by default only to
++	 * recover a wedged bridge, because a reset reboots the bridge MCU
++	 * and toggles HPD to the managed host.
++	 */
++	snsr-reset = <&porte 1 GPIO_ACTIVE_LOW>;
 +	status = "okay";
 +};
 +

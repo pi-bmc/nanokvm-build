@@ -28,6 +28,13 @@ int32_t vb_get_pool_info(struct vb_pool **pool_info);
 void vb_cleanup(void);
 int32_t vb_get_config(struct cvi_vb_cfg *pstVbConfig);
 
+/* Kernel-caller equivalents of the VB_IOCTL_SET_CONFIG / GET_VB_INIT ioctl
+ * paths, for the cv181x_v4l2 front-end. Init/exit go through vb_ctrl(), whose
+ * scalar commands are already kernel-safe.
+ */
+int32_t vb_set_config_kernel(struct cvi_vb_cfg *vb_cfg);
+bool vb_is_inited(void);
+
 int32_t vb_create_pool(struct cvi_vb_pool_cfg *config);
 int32_t vb_destroy_pool(uint32_t poolId);
 

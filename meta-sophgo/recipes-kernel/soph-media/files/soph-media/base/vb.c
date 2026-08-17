@@ -158,6 +158,26 @@ static CVI_S32 _vb_set_config(struct cvi_vb_cfg *vb_cfg)
 	return 0;
 }
 
+/* Kernel-side entry points for the cv181x_v4l2 front-end. The ioctl path
+ * above reaches _vb_set_config through copy_from_user; these take kernel
+ * pointers, and expose the init state, which is otherwise file-private.
+ * Same rule as the ioctl: configuring after init is a silent no-op, because
+ * pools cannot be re-laid-out while modules hold blocks from them.
+ */
+CVI_S32 vb_set_config_kernel(struct cvi_vb_cfg *vb_cfg)
+{
+	if (atomic_read(&ref_count))
+		return 0;
+	return _vb_set_config(vb_cfg);
+}
+EXPORT_SYMBOL_GPL(vb_set_config_kernel);
+
+bool vb_is_inited(void)
+{
+	return atomic_read(&ref_count) != 0;
+}
+EXPORT_SYMBOL_GPL(vb_is_inited);
+
 static void _vb_cleanup(void)
 {
 	struct vb_s *vb;

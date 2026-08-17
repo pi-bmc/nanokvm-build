@@ -2,7 +2,7 @@ SUMMARY = "CVITek/Sophgo multimedia kernel modules (CV181x/SG2002), ported to 6.
 DESCRIPTION = "\
 The out-of-tree CVITek pipeline that gives the SG2002 local HDMI capture and \
 hardware H.264/H.265 encode: buffer pool (base/vb), system/clock glue (sys), \
-sensor I2C wrapper, MIPI CSI-2 receiver (cif -> cvi_mipi_rx), video input (vi), \
+sensor I2C wrapper, MIPI CSI-2 receiver (cif -> soph_mipi_rx), video input (vi), \
 scaler/format converter (vpss), and the Chips&Media WAVE4 VPU (vcodec, jpeg, \
 cvi_vc_drv). None of this exists in mainline -- Sophgo's own upstreaming \
 tracker still lists Media as Not Started -- so the vendor sources are carried \
@@ -74,7 +74,10 @@ EXTRA_OEMAKE += "CVIARCH=${CVIARCH} CVIARCH_L=${CVIARCH_L}"
 # Build order is a real dependency chain, not a preference: base and sys export
 # the symbols everything else links against, and the codec modules resolve
 # against base/sys/vcodec. Each module's Module.symvers is fed to the next.
-SOPH_MEDIA_MODULES = "sys base snsr_i2c cif vi vpss vcodec jpeg cvi_vc_drv"
+# v4l2 is last: the media-controller front-end links against symbols from
+# nearly all of them (vi, vpss, cvi_vc_drv, base, sys) plus the kernel's own
+# V4L2 core (videodev/mc/videobuf2 -- see nanokvm.cfg in meta-nanokvm).
+SOPH_MEDIA_MODULES = "sys base snsr_i2c cif vi vpss vcodec jpeg cvi_vc_drv v4l2"
 
 # PWD has to be passed explicitly. The vendor Makefiles build their include
 # paths out of $(PWD) -- e.g. base/Makefile has -I$(PWD)/chip/$(CVIARCH_L) and

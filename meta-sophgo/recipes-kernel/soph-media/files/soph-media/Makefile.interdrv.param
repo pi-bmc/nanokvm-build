@@ -1,4 +1,13 @@
 #ccflags-y += -save-temps=obj
+
+# Module name prefix. Upstream osdrv at our pinned commit derives module
+# names from $(CVIARCH_L) (cv181x_vpss.ko ...), but the SOPHGO-rebranded SDK
+# the stock NanoKVM firmware ships renamed the whole family to soph_*
+# (including the formerly literal cvi_mipi_rx / cvi_vc_driver / snsr_i2c).
+# We follow the stock names so lsmod, vendor docs and side-by-side debugging
+# against a stock board line up one-to-one. Chip subdirectories still key
+# off $(CVIARCH_L); only the module names use this.
+MODPREFIX ?= soph
 ifeq ("$(CVIARCH)", "CV181X")
 ccflags-y += -D__CV181X__
 endif

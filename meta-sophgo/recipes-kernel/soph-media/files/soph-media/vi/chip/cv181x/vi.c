@@ -6217,6 +6217,51 @@ int vi_release(struct inode *inode, struct file *file)
 	return ret;
 }
 
+/* Kernel-caller equivalents of vi_open()/vi_release() for the cv181x_v4l2
+ * front-end. The driver hangs its one-time init (clocks, vi_init, sw init)
+ * and its undo (state wipe, clock drop) off the char device's open count;
+ * an in-kernel consumer has no file to open, so it takes and drops the same
+ * reference here. Bodies mirror the fops above exactly.
+ */
+int vi_open_kernel(void)
+{
+	struct cvi_vi_dev *vdev = vi_sdk_get_vdev();
+
+	if (!vdev)
+		return -ENODEV;
+
+	if (!atomic_read(&dev_open_cnt)) {
+#ifndef FPGA_PORTING
+		_vi_clk_ctrl(vdev, true);
+#endif
+		vi_init();
+
+		_vi_sw_init(vdev);
+	}
+
+	atomic_inc(&dev_open_cnt);
+
+	return 0;
+}
+
+int vi_release_kernel(void)
+{
+	struct cvi_vi_dev *vdev = vi_sdk_get_vdev();
+
+	if (!vdev)
+		return -ENODEV;
+
+	atomic_dec(&dev_open_cnt);
+
+	if (!atomic_read(&dev_open_cnt)) {
+		_vi_sdk_release(vdev);
+
+		_vi_release_op(vdev);
+	}
+
+	return 0;
+}
+
 int vi_mmap(struct file *file, struct vm_area_struct *vma)
 {
 	struct cvi_vi_dev *vdev;
@@ -8697,6 +8742,12 @@ int vi_create_instance(struct platform_device *pdev)
 	}
 
 	gViCtx = (struct cvi_vi_ctx *)vdev->shared_mem;
+
+	/* Publish the device to the SDK layer at probe rather than first
+	 * ioctl, so in-kernel callers (the v4l2 front-end) can use the SDK
+	 * backends without ever opening the char device.
+	 */
+	vi_sdk_set_vdev(vdev);
 
 	_vi_init_param(vdev);
 

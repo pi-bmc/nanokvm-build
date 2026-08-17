@@ -15,12 +15,12 @@ ccflags-y += $(INTRERDRV_FLAGS)
 
 ccflags-y +=-Wall -Wextra -Werror -Wno-unused-parameter -Wno-sign-compare
 
-obj-m += $(CVIARCH_L)_sys.o
-$(CVIARCH_L)_sys-y += common/sys.o \
+obj-m += $(MODPREFIX)_sys.o
+$(MODPREFIX)_sys-y += common/sys.o \
                     common/sys_context.o
 
 ifneq ($(INTRERDRV_FLAGS), )
-$(CVIARCH_L)_sys-y += common/sys_test.o
+$(MODPREFIX)_sys-y += common/sys_test.o
 endif
 
 all:

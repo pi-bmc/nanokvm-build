@@ -79,6 +79,13 @@ CVI_S32 vpss_detach_vb_pool(VPSS_GRP VpssGrp, VPSS_CHN VpssChn);
 
 CVI_S32 vpss_trigger_snap_frame(VPSS_GRP VpssGrp, VPSS_CHN VpssChn, CVI_U32 frame_cnt);
 
+/* Kernel-caller equivalents of the fops open/release (vpss_core.c): the
+ * driver enables its clocks and initialises the scaler cores on the first
+ * open, and an in-kernel consumer has no file to open.
+ */
+int vpss_open_kernel(void);
+int vpss_release_kernel(void);
+
 /* INTERNAL */
 CVI_S32 vpss_set_vivpss_mode(const VI_VPSS_MODE_S *pstVIVPSSMode);
 CVI_S32 vpss_set_mode(void *arg, VPSS_MODE_E enVPSSMode);
@@ -103,6 +110,12 @@ void vpss_deinit(void);
 void vpss_post_job(CVI_S32 VpssGrp);
 CVI_VOID vpss_gdc_callback(CVI_VOID *pParam, VB_BLK blk);
 
+/* Forward declarations so this header stands alone: the definitions live in
+ * chip headers that vpss.c happens to include first, which not every
+ * includer of this surface does.
+ */
+struct vpss_grp_sbm_cfg;
+struct vpss_vc_sbm_flow_cfg;
 int vpss_set_grp_sbm(struct vpss_grp_sbm_cfg *cfg);
 int vpss_set_vc_sbm_flow(struct vpss_vc_sbm_flow_cfg *cfg);
 

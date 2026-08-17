@@ -47,6 +47,32 @@ CVI_S32 vi_create_pipe(VI_PIPE ViPipe, VI_PIPE_ATTR_S *pstPipeAttr);
 CVI_S32 vi_start_pipe(VI_PIPE ViPipe);
 CVI_S32 vi_set_chn_attr(VI_PIPE ViPipe, VI_CHN ViChn, VI_CHN_ATTR_S *pstChnAttr);
 CVI_S32 vi_enable_chn(VI_CHN ViChn);
+CVI_S32 vi_get_chn_frame(VI_PIPE ViPipe, VI_CHN ViChn,
+			 VIDEO_FRAME_INFO_S *pstFrameInfo, CVI_S32 s32MilliSec);
+CVI_S32 vi_release_chn_frame(VI_PIPE ViPipe, VI_CHN ViChn,
+			     VIDEO_FRAME_INFO_S *pstFrameInfo);
+
+/* In-kernel access to the SDK layer's device pointer; see vi_sdk_layer.c. */
+struct cvi_vi_dev *vi_sdk_get_vdev(void);
+void vi_sdk_set_vdev(struct cvi_vi_dev *vdev);
+
+/* Defined in vi.c: the state wipe the last close() runs (vi_release ->
+ * _vi_sdk_release). Exported so the v4l2 front-end can retire a pipeline
+ * without holding a file descriptor open.
+ */
+void _vi_sdk_release(struct cvi_vi_dev *vdev);
+
+/* Defined in vi.c: kernel-caller equivalents of the fops open/release,
+ * carrying the same one-time init/teardown and open count.
+ */
+int vi_open_kernel(void);
+int vi_release_kernel(void);
+
+/* Defined in vi_ksyms.c: store the sensor-geometry block the ISP init
+ * consumes (the VI_IOCTL_SET_SNR_INFO backend, minus the file).
+ */
+struct cvi_isp_snr_info;
+int vi_set_snr_info_kernel(u8 raw_num, const struct cvi_isp_snr_info *info);
 #ifdef __cplusplus
 }
 #endif

@@ -29,7 +29,7 @@ VCODEC_DRIVER_HEADER := -I$(PWD)/	\
 			-I$(PWD)/$(JPEG_DRIVER_PATH)/cvi_jpg_interface/inc/	\
 			-I$(PWD)/$(VCODEC_MODULE_PATH)/include/
 
-cvi_vc_driver-objs :=	$(COMMON_PATH)/rcKernel/cvi_rc_kernel.o	\
+soph_vc_driver-objs :=	$(COMMON_PATH)/rcKernel/cvi_rc_kernel.o	\
 			$(COMMON_PATH)/rcKernel/cvi_float_point/cvi_float_point.o	\
 			$(COMMON_PATH)/rcKernel/cvi_float_point/cvi_soft_float.o	\
 			$(VCODEC_DRIVER_PATH)/sample/main_enc_cvitest.o	\
@@ -76,11 +76,12 @@ cvi_vc_driver-objs :=	$(COMMON_PATH)/rcKernel/cvi_rc_kernel.o	\
 			$(JPEG_DRIVER_PATH)/cvi_jpg_interface/test/cvi_jpg_codec.o	\
 			$(VCODEC_MODULE_PATH)/src/enc_ctx.o	\
 			$(VCODEC_MODULE_PATH)/src/cvi_venc.o	\
+			$(VCODEC_MODULE_PATH)/src/cvi_venc_ksyms.o	\
 			$(VCODEC_MODULE_PATH)/src/cvi_vdec.o	\
 			cvi_vc_drv.o	\
 			cvi_vc_drv_proc.o
 
-obj-m = cvi_vc_driver.o
+obj-m = soph_vc_driver.o
 
 ccflags-y += -I$(PWD)/../include/common/uapi/ -I$(PWD)/../include/chip/$(CVIARCH_L)/uapi/
 ccflags-y += -I$(PWD)/../include/common/kapi/
@@ -136,7 +137,7 @@ VCODEC_DRIVER_HEADER := -I$(PWD)/	\
 			-I$(PWD)/$(VCODEC_MODULE_PATH)/include/	\
 			-I$(srctree)/drivers/staging/android/	\
 
-cvi_vc_driver-objs :=	$(VCODEC_DRIVER_PATH)/sample/main_enc_cvitest.o	\
+soph_vc_driver-objs :=	$(VCODEC_DRIVER_PATH)/sample/main_enc_cvitest.o	\
 			$(VCODEC_DRIVER_PATH)/sample/helper/main_helper.o	\
 			$(VCODEC_DRIVER_PATH)/sample/helper/vpuhelper.o	\
 			$(VCODEC_DRIVER_PATH)/sample/helper/bitstream/bitstreamfeeder.o	\
