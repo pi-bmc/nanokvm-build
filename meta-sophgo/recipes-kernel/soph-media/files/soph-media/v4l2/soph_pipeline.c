@@ -100,8 +100,19 @@ extern CVI_S32 CVI_VENC_ReleaseStream(VENC_CHN VeChn,
 extern CVI_S32 CVI_VENC_RequestIDR(VENC_CHN VeChn, CVI_BOOL bInstant);
 /* The global vcodec mutex (soph_vcodec). SendFrame takes it and a completed
  * GetStream releases it; the recovery path below unlocks it as its owner.
+ * vcodec_park_dead_core is the register-free half of LeaveVcodecLock: it
+ * gates the wedged core's clock off (SoC clock controller, safe) while
+ * skipping the CoreSleepWake handshake (hung-core register access resets
+ * the SoC).
  */
 extern void vcodec_unlock(void);
+extern void vcodec_park_dead_core(int core_idx);
+
+/* vcodec core numbering on cv181x: core 0 is the WAVE420L (H.265),
+ * core 1 the CODA980 (H.264).
+ */
+#define SOPH_VCODEC_CORE_H265	0
+#define SOPH_VCODEC_CORE_H264	1
 
 /* The LT6911's hardware reset line (PWR_GPIO1, declared as the cif node's
  * snsr-reset per the stock DTB). A pulse reboots the bridge MCU from its SPI
@@ -143,17 +154,17 @@ MODULE_PARM_DESC(bridge_reset,
  */
 #define SOPH_VPSS_DEPTH		2
 
-/* Timeouts, from the field-tuned loop: a frame is due every 33ms at 30fps,
- * so a 100ms wait means the source stopped; the encoder gets longer because
- * an IDR on a complex screen legitimately takes a while.
+/* A frame is due every 33ms at 30fps, so a 100ms wait on VPSS means the
+ * source stopped — not an error, just an idle screen.
  */
 #define SOPH_GET_FRAME_MS	100
-#define SOPH_SEND_FRAME_MS	100
-#define SOPH_GET_STREAM_MS	500
-/* Closing an open SendFrame/GetStream pair is mandatory (see encode_one);
- * 20 x 500ms is far beyond any legitimate encode.
+/* The venc calls block (-1), matching the vendor's own bind-mode consumer.
+ * A bounded timeout routes cviGetEncodedInfo down its "non_block" branch,
+ * which returns TE_STA_ENC_TIMEOUT without ever calling cviVPU_ChangeState
+ * — the ENC_PIC/GET_BS state machine desyncs and no later retry can
+ * succeed. Cancellation is bounded at the vb2 layer, not here.
  */
-#define SOPH_GET_STREAM_RETRIES	20
+#define SOPH_VENC_BLOCK		(-1)
 
 /* First-frames pack-geometry instrumentation; see the copy loop. */
 static int dbg_packs = 12;
@@ -412,11 +423,15 @@ static void soph_mipi_clock_off(struct soph_v4l2_dev *dev)
 
 static u32 soph_vb_blk_size(u32 w, u32 h)
 {
-	/* NV21 with the 64-byte stride the scaler writes at. Guessing low
-	 * does not fail cleanly — allocations come back short — so the
-	 * alignment is applied rather than assumed away.
+	/* Sized for the LARGEST tenant: the VI yuv-bypass DMA writes the
+	 * bridge's packed 4:2:2 stream at 2 bytes/pixel, full height
+	 * (ispblk_dma_yuv_bypass_config: len = width * 2, num = height).
+	 * Sizing for NV21 (1.5 B/px) lets that DMA overrun each block by
+	 * ~1 MiB at 1080p and trample the neighbouring ION allocations —
+	 * observed on hardware as the encoder wedging a few frames in.
+	 * 64-byte stride alignment as the scaler writes at.
 	 */
-	return (ALIGN(w, 64) * h * 3) / 2;
+	return ALIGN(w, 64) * h * 2;
 }
 
 static int soph_setup_vb(struct soph_v4l2_dev *dev)
@@ -530,7 +545,15 @@ static int soph_setup_vi_pipe(struct soph_v4l2_dev *dev)
 		.enPipeBypassMode = VI_PIPE_BYPASS_NONE,
 		.u32MaxW = dev->cfg.in_w,
 		.u32MaxH = dev->cfg.in_h,
-		.enPixFmt = PIXEL_FORMAT_NV21,
+		/* What the bypass DMA actually writes: the bridge's packed
+		 * 4:2:2 stream, byte order UYVY on this wire
+		 * (MEDIA_BUS_FMT_UYVY8_1X16), 2 bytes/pixel at full height —
+		 * see ispblk_dma_yuv_bypass_config (len = width * 2). Calling
+		 * it NV21 shears the picture into stripes downstream and
+		 * undersizes the buffers the DMA writes into. If hue comes
+		 * out rotated, the byte order is YUYV/VYUY instead.
+		 */
+		.enPixFmt = PIXEL_FORMAT_UYVY,
 		.enCompressMode = COMPRESS_MODE_NONE,
 		.enBitWidth = DATA_BITWIDTH_8,
 		/* Source rate on both sides: VI does not convert, and
@@ -552,7 +575,7 @@ static int soph_setup_vi_pipe(struct soph_v4l2_dev *dev)
 			.u32Width = dev->cfg.in_w,
 			.u32Height = dev->cfg.in_h,
 		},
-		.enPixelFormat = PIXEL_FORMAT_NV21,
+		.enPixelFormat = PIXEL_FORMAT_UYVY,
 		.enDynamicRange = DYNAMIC_RANGE_SDR8,
 		.enVideoFormat = VIDEO_FORMAT_LINEAR,
 		.enCompressMode = COMPRESS_MODE_NONE,
@@ -599,7 +622,13 @@ static int soph_setup_vpss(struct soph_v4l2_dev *dev)
 	VPSS_GRP_ATTR_S ga = {
 		.u32MaxW = dev->cfg.in_w,
 		.u32MaxH = dev->cfg.in_h,
-		.enPixelFormat = PIXEL_FORMAT_NV21,
+		/* Matches what VI hands over (packed 4:2:2); the 422→420
+		 * conversion to the encoder's NV21 happens in the channel
+		 * below — that conversion is the scaler's job, exactly as
+		 * on the stock firmware where userspace pulls NV21 frames
+		 * out of VPSS.
+		 */
+		.enPixelFormat = PIXEL_FORMAT_UYVY,
 		/* Equal on purpose: the group has no converter and an
 		 * unequal pair buys a warning per bring-up and nothing
 		 * else.
@@ -649,9 +678,10 @@ static u32 soph_bitstream_buf_size(u32 w, u32 h)
 {
 	/* The ring has to survive the worst case — the IDR sent when a
 	 * viewer joins on a screen full of text — without stalling the
-	 * encoder.
+	 * encoder. The vendor's default for an unspecified size is 4 MiB
+	 * (STREAM_BUF_SIZE); match it rather than undercut it.
 	 */
-	return max_t(u32, w * h / 2, SZ_1M);
+	return max_t(u32, w * h, SZ_4M);
 }
 
 static int soph_setup_venc(struct soph_v4l2_dev *dev)
@@ -955,9 +985,8 @@ int soph_pipeline_encode_one(struct soph_v4l2_dev *dev,
 	void *dst;
 	size_t dst_size, used = 0;
 	bool keyframe = false;
-	bool sent;
 	u64 pts = 0;
-	u32 i, tries;
+	u32 i;
 	int ret;
 
 	memset(&frame, 0, sizeof(frame));
@@ -969,77 +998,62 @@ int soph_pipeline_encode_one(struct soph_v4l2_dev *dev,
 		 */
 		return -EAGAIN;
 
-	cret = CVI_VENC_SendFrame(SOPH_VENC_CHN, &frame, SOPH_SEND_FRAME_MS);
-
-	/* Release immediately, before looking at the send result: a frame
-	 * that cannot be released is a block permanently lost from the
-	 * pool.
-	 */
-	vpss_release_chn_frame(SOPH_VPSS_GRP, SOPH_VPSS_CHN, &frame);
-
-	sent = (cret == CVI_SUCCESS);
-	if (!sent && !soph_is_no_frame(cret))
-		return soph_err(dev, "venc send frame", cret);
-	/* A refused SendFrame (encoder queue full) still falls through to
-	 * GetStream: the encoder is busy exactly when its output needs
-	 * draining, and skipping the collection would deadlock after a
-	 * handful of frames.
-	 */
-
-	/* The vendor contract, spelled out in its own source ("user should
-	 * keep get frame until success"): a successful SendFrame takes the
-	 * global vcodec mutex and only a completed GetStream releases it. A
-	 * timed-out GetStream returns with the lock still held by THIS task,
-	 * so once a frame is sent the pair must be closed before this
-	 * function returns -- abandoning it leaks the mutex, and the next
-	 * DestroyChn deadlocks in EnterVcodecLock. Observed on the board as
-	 * STREAMOFF hung forever after the feeder exited mid-pair.
-	 *
-	 * Hence: sent frames retry GetStream on the benign codes, generously
-	 * bounded; an unsent cycle keeps the old single-try behaviour (no
-	 * lock is at stake).
-	 */
-	tries = sent ? SOPH_GET_STREAM_RETRIES : 1;
-	for (i = 0; i < tries; i++) {
-		memset(&stream, 0, sizeof(stream));
-		/* pstPack stays NULL: GetStream allocates the pack array and
-		 * the caller frees it -- on every attempt, success or not.
-		 */
-		cret = CVI_VENC_GetStream(SOPH_VENC_CHN, &stream,
-					  SOPH_GET_STREAM_MS);
-		if (cret == CVI_SUCCESS || !soph_is_no_frame(cret))
-			break;
-		vfree(stream.pstPack);
-		stream.pstPack = NULL;
-		if (i == 0)
-			dev_info_ratelimited(&dev->pdev->dev,
-					     "venc busy after send, retrying (0x%08x)\n",
-					     (u32)cret);
-	}
+	cret = CVI_VENC_SendFrame(SOPH_VENC_CHN, &frame, SOPH_VENC_BLOCK);
 	if (cret != CVI_SUCCESS) {
-		vfree(stream.pstPack);
-		if (sent) {
-			/* The encoder never finished a frame it accepted. The
-			 * global vcodec mutex is held BY THIS TASK (SendFrame
-			 * took it; only a completed GetStream releases it), so
-			 * release it here as its legal owner before failing
-			 * the stream — leaving it held turns one stalled
-			 * frame into a chip-wide wedge: every later CreateChn
-			 * (including the app's own rebuild) blocks forever in
-			 * EnterVcodecLock, observed on the board as D-state
-			 * STREAMON. With the lock released, normal teardown
-			 * and the next STREAMON recover the channel fully.
-			 */
-			vcodec_unlock();
-			dev->venc_dead = true;
-			dev_crit(&dev->pdev->dev,
-				 "venc never returned a sent frame (0x%08x); released the vcodec lock; venc teardown disabled (hung core) -- capture needs a module reload\n",
-				 (u32)cret);
-			return -EIO;
-		}
+		/* Never submitted: hand the block straight back. With the
+		 * blocking contract there is no drain-through — GetStream
+		 * may only run with a frame in flight, or it would block
+		 * on a stream that is never coming.
+		 */
+		vpss_release_chn_frame(SOPH_VPSS_GRP, SOPH_VPSS_CHN, &frame);
 		if (soph_is_no_frame(cret))
 			return -EAGAIN;
-		return soph_err(dev, "venc get stream", cret);
+		return soph_err(dev, "venc send frame", cret);
+	}
+	/* The frame stays held until GetStream closes the encode: the VPU
+	 * DMA-reads this block as its source picture for the whole encode,
+	 * and an early release lets VPSS recycle and overwrite it mid-frame
+	 * (the vendor's bind-mode consumer releases the input only after
+	 * getStream returns).
+	 *
+	 * The vendor contract ("user should keep get frame until success"):
+	 * SendFrame takes the global vcodec mutex and only a completed
+	 * GetStream releases it, so the pair must be closed before this
+	 * function returns. Blocking (-1) is the vendor's own mode and the
+	 * only one that keeps the ENC_PIC/GET_BS state machine advancing —
+	 * the bounded-timeout branch returns without cviVPU_ChangeState and
+	 * no retry after it can ever succeed.
+	 *
+	 * pstPack stays NULL: GetStream allocates the pack array and the
+	 * caller frees it, success or not.
+	 */
+	memset(&stream, 0, sizeof(stream));
+	cret = CVI_VENC_GetStream(SOPH_VENC_CHN, &stream, SOPH_VENC_BLOCK);
+
+	vpss_release_chn_frame(SOPH_VPSS_GRP, SOPH_VPSS_CHN, &frame);
+	if (cret != CVI_SUCCESS) {
+		vfree(stream.pstPack);
+		/* A blocking GetStream came back without a stream: hard
+		 * failure with the pair open. The global vcodec mutex is
+		 * held BY THIS TASK (SendFrame took it; only a completed
+		 * GetStream releases it), so release it here as its legal
+		 * owner before failing the stream — leaving it held turns
+		 * one dead frame into a chip-wide wedge: every later
+		 * CreateChn (including the app's own rebuild) blocks
+		 * forever in EnterVcodecLock. This is deliberately only
+		 * the mutex half of LeaveVcodecLock(): the CoreSleepWake
+		 * register write the full version does resets the SoC
+		 * when the core is hung (observed on hardware).
+		 */
+		vcodec_unlock();
+		vcodec_park_dead_core(dev->cfg.pixelformat == V4L2_PIX_FMT_HEVC ?
+				      SOPH_VCODEC_CORE_H265 :
+				      SOPH_VCODEC_CORE_H264);
+		dev->venc_dead = true;
+		dev_crit(&dev->pdev->dev,
+			 "venc failed a sent frame (0x%08x); released the vcodec lock; venc teardown disabled (hung core) -- capture needs a module reload\n",
+			 (u32)cret);
+		return -EIO;
 	}
 
 	dst = vb2_plane_vaddr(&vbuf->vb2_buf, 0);

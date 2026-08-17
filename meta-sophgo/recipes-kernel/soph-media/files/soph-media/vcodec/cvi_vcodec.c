@@ -444,7 +444,7 @@ static irqreturn_t vpu_irq_handler(int irq, void *dev_id)
 			//wake_up(&tWaitQueue[chnIdxMapping[coreIdx]]);
 		}
 	}
-	wake_up_interruptible(&pvctx->s_interrupt_wait_q);
+	wake_up(&pvctx->s_interrupt_wait_q);
 	VCODEC_DBG_INTR("[-]%s\n", __func__);
 
 	return IRQ_HANDLED;
@@ -539,7 +539,13 @@ int vpu_wait_interrupt(vpudrv_intr_info_t *p_intr_info)
 	VCODEC_DBG_TRACE("coreIdx = %d, s_interrupt_flag = 0x%X\n",
 			info.coreIdx, pvctx->s_interrupt_flag);
 
-	ret = wait_event_interruptible_timeout(
+	/*
+	 * Uninterruptible on purpose (matches the vendor driver): an
+	 * interrupted wait here would return without acking BIT_INT_CLEAR
+	 * or clearing s_interrupt_flag, permanently desyncing the host
+	 * from the CODA firmware.
+	 */
+	ret = wait_event_timeout(
 		pvctx->s_interrupt_wait_q, pvctx->s_interrupt_flag != 0,
 		msecs_to_jiffies(info.timeout));
 	if (!ret) {
@@ -548,10 +554,6 @@ int vpu_wait_interrupt(vpudrv_intr_info_t *p_intr_info)
 	}
 
 	ANNOTATE_CHANNEL_COLOR(1, ANNOTATE_GREEN, "vcodec end");
-	if (signal_pending(current)) {
-		ret = -ERESTARTSYS;
-		return ret;
-	}
 
 	VCODEC_DBG_INTR("s_interrupt_flag(%d), reason(0x%08lx)\n",
 		pvctx->s_interrupt_flag, pvctx->interrupt_reason);
@@ -599,6 +601,25 @@ int vpu_set_clock_gate_ext(struct clk_ctrl_info *p_info)
 	return ret;
 }
 EXPORT_SYMBOL(vpu_set_clock_gate_ext);
+
+/* Gate a wedged core's clocks off without touching its registers. The
+ * dead-core recovery path holds the vcodec mutex it is about to drop and
+ * must skip LeaveVcodecLock's CoreSleepWake handshake (register access
+ * to a hung core resets the SoC), but the clock half runs through the
+ * SoC clock controller and is safe — and it balances the CLK_ENABLE the
+ * matching EnterVcodecLock did.
+ */
+void vcodec_park_dead_core(int core_idx)
+{
+#ifdef VPU_SUPPORT_GLOBAL_DEVICE_CONTEXT
+	struct cvi_vpu_device *vdev = (struct cvi_vpu_device *)pCviVpuDevice;
+
+	if (!vdev || core_idx < 0 || core_idx >= MAX_NUM_VPU_CORE)
+		return;
+	set_clock_enable(vdev, 0, 1 << core_idx);
+#endif
+}
+EXPORT_SYMBOL(vcodec_park_dead_core);
 
 // VDI_IOCTL_GET_INSTANCE_POOL
 int vpu_get_instance_pool(vpudrv_buffer_t *p_vdb)

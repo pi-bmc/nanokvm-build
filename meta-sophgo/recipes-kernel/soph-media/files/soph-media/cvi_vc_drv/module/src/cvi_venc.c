@@ -3032,7 +3032,12 @@ CVI_S32 CVI_VENC_StartRecvFrame(VENC_CHN VeChn,
 	venc_chn_vars *pChnVars = NULL;
 	struct cvi_venc_vb_ctx *pVbCtx = NULL;
 	VENC_ATTR_S *pVencAttr = NULL;
-	CVI_BOOL bAsyncEn = CVI_TRUE;
+	/*
+	 * The dedicated wait kthread (cvitask_vc_wt) is gone in this
+	 * port, so the async completion path has no consumer; run the
+	 * synchronous flow the reference middleware uses.
+	 */
+	CVI_BOOL bAsyncEn = CVI_FALSE;
 
 	CVI_VENC_API("VeChn = %d, s32RecvPicNum = %d\n", VeChn,
 		     pstRecvParam->s32RecvPicNum);
