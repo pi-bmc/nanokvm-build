@@ -3446,9 +3446,12 @@ CVI_S32 vpss_destroy_grp(VPSS_GRP VpssGrp)
 			vpssCtx[VpssGrp]->stChnCfgs[VpssChn].stLDCAttr.bEnable = CVI_FALSE;
 
 			if (mesh[VpssGrp][VpssChn].paddr) {
-				// if (mesh[VpssGrp][VpssChn].paddr != DEFAULT_MESH_PADDR) {
-				// 	sys_ion_free(mesh[VpssGrp][VpssChn].paddr);
-				// }
+				/* Reference trees free the mesh here; zeroing
+				 * only the bookkeeping leaks one ION buffer per
+				 * LDC/rotation enable-disable cycle.
+				 */
+				if (mesh[VpssGrp][VpssChn].paddr != DEFAULT_MESH_PADDR)
+					sys_ion_free(mesh[VpssGrp][VpssChn].paddr);
 				mesh[VpssGrp][VpssChn].paddr = 0;
 				mesh[VpssGrp][VpssChn].vaddr = 0;
 			}

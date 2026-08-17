@@ -6503,6 +6503,12 @@ static void vi_motion_level_calc(struct cvi_vi_dev *vdev, enum cvi_isp_raw raw_n
 
 	memset(motion_table, 0, MO_TBL_SIZE);
 	if (mmap_blk.size >= (total_grid * sizeof(CVI_U16))) {
+		/* The rgbmap statistics are ISP-DMA-written and read here
+		 * through the cached linear map; without an invalidate the
+		 * CPU scores stale motion data.
+		 */
+		sys_cache_invalidate(mmap_blk.phy_addr, mmap_vaddr,
+				     total_grid * sizeof(CVI_U16));
 		for (i = 0; i < vc_total_grid; i++) {
 			idxX = i % vc_grid_w_num * u8VcNum;
 			idxY = i / vc_grid_w_num * u8VcNum;
@@ -6559,6 +6565,12 @@ static void vi_dci_calc(struct cvi_vi_dev *vdev, enum cvi_isp_raw raw_num, uint3
 	spin_unlock_irqrestore(&pool->post_sts_lock, flags);
 
 	dci_vaddr = (CVI_U8 *)phys_to_virt(pool->sts_mem[dci_idx].dci.phy_addr);
+
+	/* Same as the motion table above: DMA-written histogram read via
+	 * the cached linear map.
+	 */
+	sys_cache_invalidate(pool->sts_mem[dci_idx].dci.phy_addr, dci_vaddr,
+			     256 * sizeof(CVI_U16));
 
 	*dci_lv = 0;
 
