@@ -115,6 +115,11 @@ struct soph_v4l2_dev {
 
 	struct soph_pipe_cfg cfg;
 	bool pipe_up;
+	/* The encoder core stopped answering mid-frame: the vcodec lock has
+	 * been force-released, but DestroyChn on the hung core resets the
+	 * SoC, so VENC teardown is skipped. Module reload recovers.
+	 */
+	bool venc_dead;
 };
 
 /* soph_pipeline.c — the ordered vendor bring-up/teardown and the per-frame

@@ -458,6 +458,25 @@ static int soph_dv_timings_cap(struct file *file, void *priv,
 	return v4l2_subdev_call(&dev->bridge.sd, pad, dv_timings_cap, cap);
 }
 
+/* EDID on the video node forwards to the bridge, so the app never needs to
+ * discover subdev nodes. pad is forced to the bridge's single source pad.
+ */
+static int soph_g_edid(struct file *file, void *priv, struct v4l2_edid *edid)
+{
+	struct soph_v4l2_dev *dev = video_drvdata(file);
+
+	edid->pad = 0;
+	return v4l2_subdev_call(&dev->bridge.sd, pad, get_edid, edid);
+}
+
+static int soph_s_edid(struct file *file, void *priv, struct v4l2_edid *edid)
+{
+	struct soph_v4l2_dev *dev = video_drvdata(file);
+
+	edid->pad = 0;
+	return v4l2_subdev_call(&dev->bridge.sd, pad, set_edid, edid);
+}
+
 static int soph_subscribe_event(struct v4l2_fh *fh,
 				const struct v4l2_event_subscription *sub)
 {
@@ -487,6 +506,8 @@ static const struct v4l2_ioctl_ops soph_ioctl_ops = {
 	.vidioc_g_dv_timings = soph_g_dv_timings,
 	.vidioc_s_dv_timings = soph_s_dv_timings,
 	.vidioc_dv_timings_cap = soph_dv_timings_cap,
+	.vidioc_g_edid = soph_g_edid,
+	.vidioc_s_edid = soph_s_edid,
 	.vidioc_reqbufs = vb2_ioctl_reqbufs,
 	.vidioc_querybuf = vb2_ioctl_querybuf,
 	.vidioc_qbuf = vb2_ioctl_qbuf,

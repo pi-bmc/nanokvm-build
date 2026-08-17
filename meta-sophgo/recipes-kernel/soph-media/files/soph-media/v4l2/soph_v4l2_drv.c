@@ -6,17 +6,24 @@
  * has exactly one path — the media controller topology is documentation and
  * format negotiation, not routing. See DESIGN.md for why this is not (yet)
  * an OF-graph of independent drivers.
+ *
+ * This is a real platform driver bound to a self-registered platform
+ * device, not a bare device: V4L2 core paths dereference
+ * dev->driver — v4l2_device_register builds its default name from
+ * driver->name, and subdev_open takes a module reference through
+ * mdev->dev->driver->owner. Both were NULL oopses on the board with a
+ * driverless device (module init killed mid-load; subdev node open killed
+ * the caller), so the probe/bind shape is load-bearing, exactly as it is
+ * for vivid and vimc.
  */
 #include <linux/module.h>
 
 #include "soph_v4l2.h"
 
-static struct soph_v4l2_dev *soph_dev;
+#define SOPH_DRV_NAME "soph-v4l2"
+
 static struct platform_device *soph_pdev;
 
-/* Subdev events bubble up here; the source-change event matters to the
- * process holding /dev/video0, so mirror it onto the video node too.
- */
 static void soph_notify(struct v4l2_subdev *sd, unsigned int notification,
 			void *arg)
 {
@@ -52,35 +59,30 @@ static int soph_create_links(struct soph_v4l2_dev *dev)
 				     &dev->vdev.entity, 0, flags);
 }
 
-static int __init soph_v4l2_init(void)
+static int soph_v4l2_probe(struct platform_device *pdev)
 {
 	struct soph_v4l2_dev *dev;
 	int ret;
 
-	/* The vendor drivers this fronts are platform devices probed from
-	 * DT; this module is pure glue with no hardware of its own, so it
-	 * carries its own platform device the way vimc/vivid do.
-	 */
-	soph_pdev = platform_device_register_simple("cv181x-v4l2", -1, NULL,
-						    0);
-	if (IS_ERR(soph_pdev))
-		return PTR_ERR(soph_pdev);
-
 	dev = kzalloc(sizeof(*dev), GFP_KERNEL);
-	if (!dev) {
-		ret = -ENOMEM;
-		goto err_pdev;
-	}
-	soph_dev = dev;
-	dev->pdev = soph_pdev;
+	if (!dev)
+		return -ENOMEM;
+	dev->pdev = pdev;
+	platform_set_drvdata(pdev, dev);
 
-	dev->mdev.dev = &soph_pdev->dev;
+	dev->mdev.dev = &pdev->dev;
 	strscpy(dev->mdev.model, "CV181x capture", sizeof(dev->mdev.model));
 	media_device_init(&dev->mdev);
 
 	dev->v4l2_dev.mdev = &dev->mdev;
 	dev->v4l2_dev.notify = soph_notify;
-	ret = v4l2_device_register(&soph_pdev->dev, &dev->v4l2_dev);
+	/* Redundant now that a driver is bound (the core would build
+	 * "soph-v4l2 soph-v4l2" from driver+device name), but explicit is
+	 * still better than depending on that deref.
+	 */
+	strscpy(dev->v4l2_dev.name, SOPH_DRV_NAME,
+		sizeof(dev->v4l2_dev.name));
+	ret = v4l2_device_register(&pdev->dev, &dev->v4l2_dev);
 	if (ret)
 		goto err_mdev;
 
@@ -113,7 +115,7 @@ static int __init soph_v4l2_init(void)
 	if (ret)
 		goto err_node;
 
-	dev_info(&soph_pdev->dev,
+	dev_info(&pdev->dev,
 		 "cv181x v4l2 front-end up: %s -> %s -> %s -> %s -> %s\n",
 		 SOPH_ENT_LT6911, SOPH_ENT_CSI, SOPH_ENT_ISP,
 		 SOPH_ENT_SCALER, SOPH_ENT_VENC);
@@ -129,15 +131,12 @@ err_v4l2:
 err_mdev:
 	media_device_cleanup(&dev->mdev);
 	kfree(dev);
-	soph_dev = NULL;
-err_pdev:
-	platform_device_unregister(soph_pdev);
 	return ret;
 }
 
-static void __exit soph_v4l2_exit(void)
+static void soph_v4l2_remove(struct platform_device *pdev)
 {
-	struct soph_v4l2_dev *dev = soph_dev;
+	struct soph_v4l2_dev *dev = platform_get_drvdata(pdev);
 
 	if (!dev)
 		return;
@@ -148,8 +147,53 @@ static void __exit soph_v4l2_exit(void)
 	v4l2_device_unregister(&dev->v4l2_dev);
 	media_device_cleanup(&dev->mdev);
 	kfree(dev);
-	soph_dev = NULL;
+}
+
+static struct platform_driver soph_v4l2_driver = {
+	.probe = soph_v4l2_probe,
+	.remove = soph_v4l2_remove,
+	.driver = {
+		.name = SOPH_DRV_NAME,
+	},
+};
+
+static int __init soph_v4l2_init(void)
+{
+	int ret;
+
+	ret = platform_driver_register(&soph_v4l2_driver);
+	if (ret)
+		return ret;
+
+	/* The hardware is owned by the vendor drivers, probed from their own
+	 * DT nodes; this module is pure glue with no node of its own, so it
+	 * carries its own platform device the way vivid does. Registering
+	 * the device after the driver binds it immediately.
+	 */
+	soph_pdev = platform_device_register_simple(SOPH_DRV_NAME, -1, NULL,
+						    0);
+	if (IS_ERR(soph_pdev)) {
+		platform_driver_unregister(&soph_v4l2_driver);
+		return PTR_ERR(soph_pdev);
+	}
+
+	/* Binding is synchronous on this bus; a probe failure leaves no
+	 * drvdata behind. Surface it as the module load error instead of
+	 * sitting there half-registered.
+	 */
+	if (!platform_get_drvdata(soph_pdev)) {
+		platform_device_unregister(soph_pdev);
+		platform_driver_unregister(&soph_v4l2_driver);
+		return -ENODEV;
+	}
+
+	return 0;
+}
+
+static void __exit soph_v4l2_exit(void)
+{
 	platform_device_unregister(soph_pdev);
+	platform_driver_unregister(&soph_v4l2_driver);
 }
 
 module_init(soph_v4l2_init);

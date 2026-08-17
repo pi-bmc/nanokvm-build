@@ -383,7 +383,12 @@ EXPORT_SYMBOL_GPL(sys_ion_get_memory_state);
 
 CVI_S32 sys_cache_invalidate(CVI_U64 addr_p, void *addr_v, CVI_U32 u32Len)
 {
-	arch_sync_dma_for_device(addr_p, u32Len, DMA_FROM_DEVICE);
+	/*
+	 * On riscv the invalidate lives in the for_cpu hook;
+	 * for_device(FROM_DEVICE) only cleans, which leaves the CPU
+	 * reading stale lines after the VPU has DMA'd fresh data.
+	 */
+	arch_sync_dma_for_cpu(addr_p, u32Len, DMA_FROM_DEVICE);
 
 	/*	*/
 	smp_mb();
@@ -413,7 +418,7 @@ static CVI_S32 sys_cache_op_userv(unsigned long arg, enum enum_cache_op op_code)
 	}
 
 	if (op_code == enum_cache_op_invalid)
-		arch_sync_dma_for_device(ioctl_arg.addr_p, ioctl_arg.size, DMA_FROM_DEVICE);
+		arch_sync_dma_for_cpu(ioctl_arg.addr_p, ioctl_arg.size, DMA_FROM_DEVICE);
 	else if (op_code == enum_cache_op_flush)
 		arch_sync_dma_for_device(ioctl_arg.addr_p, ioctl_arg.size, DMA_TO_DEVICE);
 

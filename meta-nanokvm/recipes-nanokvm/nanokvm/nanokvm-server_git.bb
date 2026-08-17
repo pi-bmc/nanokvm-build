@@ -9,7 +9,7 @@ inherit go-mod go
 # github.com/BMCPi/NanoKVM -- GO_IMPORT must match the module path, not the URL.
 GO_IMPORT = "github.com/BMCPi/NanoKVM"
 SRCREV = "${AUTOREV}"
-SRC_URI = "git://github.com/pi-bmc/nanokvm-app;branch=main;protocol=https \
+SRC_URI = "git://github.com/pi-bmc/nanokvm-app;branch=v4l2;protocol=https \
            file://nanokvm-server-run"
 
 S = "${WORKDIR}/git"

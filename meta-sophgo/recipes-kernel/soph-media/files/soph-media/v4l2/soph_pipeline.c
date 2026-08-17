@@ -98,6 +98,10 @@ extern CVI_S32 CVI_VENC_GetStream(VENC_CHN VeChn, VENC_STREAM_S *pstStream,
 extern CVI_S32 CVI_VENC_ReleaseStream(VENC_CHN VeChn,
 				      VENC_STREAM_S *pstStream);
 extern CVI_S32 CVI_VENC_RequestIDR(VENC_CHN VeChn, CVI_BOOL bInstant);
+/* The global vcodec mutex (soph_vcodec). SendFrame takes it and a completed
+ * GetStream releases it; the recovery path below unlocks it as its owner.
+ */
+extern void vcodec_unlock(void);
 
 /* The LT6911's hardware reset line (PWR_GPIO1, declared as the cif node's
  * snsr-reset per the stock DTB). A pulse reboots the bridge MCU from its SPI
@@ -146,6 +150,13 @@ MODULE_PARM_DESC(bridge_reset,
 #define SOPH_GET_FRAME_MS	100
 #define SOPH_SEND_FRAME_MS	100
 #define SOPH_GET_STREAM_MS	500
+/* Closing an open SendFrame/GetStream pair is mandatory (see encode_one);
+ * 20 x 500ms is far beyond any legitimate encode.
+ */
+#define SOPH_GET_STREAM_RETRIES	20
+
+/* First-frames pack-geometry instrumentation; see the copy loop. */
+static int dbg_packs = 12;
 
 /* The board's lane routing, bridge → SoC. Slot 0 is the clock lane. Board
  * fact, not derivable from anything.
@@ -719,8 +730,10 @@ static void soph_reclaim_stale(struct soph_v4l2_dev *dev)
 	struct cvi_vi_dev *vdev = vi_sdk_get_vdev();
 
 	sys_unbind(&src, &dst);
-	CVI_VENC_StopRecvFrame(SOPH_VENC_CHN);
-	CVI_VENC_DestroyChn(SOPH_VENC_CHN);
+	if (!dev->venc_dead) {
+		CVI_VENC_StopRecvFrame(SOPH_VENC_CHN);
+		CVI_VENC_DestroyChn(SOPH_VENC_CHN);
+	}
 	vpss_stop_grp(SOPH_VPSS_GRP);
 	vpss_disable_chn(SOPH_VPSS_GRP, SOPH_VPSS_CHN);
 	vpss_destroy_grp(SOPH_VPSS_GRP);
@@ -746,6 +759,17 @@ int soph_pipeline_up(struct soph_v4l2_dev *dev)
 
 	if (dev->pipe_up)
 		return 0;
+
+	/* A hung encoder core survives STREAMOFF (teardown skips it), and
+	 * any register access to it -- CreateChn included -- has been
+	 * observed to reset the SoC. Refuse bring-up until the modules are
+	 * reloaded.
+	 */
+	if (dev->venc_dead) {
+		dev_err_ratelimited(&dev->pdev->dev,
+				    "capture disabled: encoder core hung; reload the media modules\n");
+		return -EIO;
+	}
 
 	/* Take the drivers' open references first: VI hangs its one-time
 	 * init (clocks, sw init) and VPSS its clock enables off the open
@@ -878,8 +902,17 @@ void soph_pipeline_down(struct soph_v4l2_dev *dev)
 	dev->pipe_up = false;
 
 	sys_unbind(&src, &dst);
-	CVI_VENC_StopRecvFrame(SOPH_VENC_CHN);
-	CVI_VENC_DestroyChn(SOPH_VENC_CHN);
+	if (dev->venc_dead) {
+		/* The CODA core stopped answering and DestroyChn on it was
+		 * observed to reset the whole SoC. Leak the channel; capture
+		 * is down until a module reload either way.
+		 */
+		dev_warn(&dev->pdev->dev,
+			 "skipping venc teardown: encoder core hung\n");
+	} else {
+		CVI_VENC_StopRecvFrame(SOPH_VENC_CHN);
+		CVI_VENC_DestroyChn(SOPH_VENC_CHN);
+	}
 
 	vpss_stop_grp(SOPH_VPSS_GRP);
 	vpss_disable_chn(SOPH_VPSS_GRP, SOPH_VPSS_CHN);
@@ -922,8 +955,9 @@ int soph_pipeline_encode_one(struct soph_v4l2_dev *dev,
 	void *dst;
 	size_t dst_size, used = 0;
 	bool keyframe = false;
+	bool sent;
 	u64 pts = 0;
-	u32 i;
+	u32 i, tries;
 	int ret;
 
 	memset(&frame, 0, sizeof(frame));
@@ -943,7 +977,8 @@ int soph_pipeline_encode_one(struct soph_v4l2_dev *dev,
 	 */
 	vpss_release_chn_frame(SOPH_VPSS_GRP, SOPH_VPSS_CHN, &frame);
 
-	if (cret != CVI_SUCCESS && !soph_is_no_frame(cret))
+	sent = (cret == CVI_SUCCESS);
+	if (!sent && !soph_is_no_frame(cret))
 		return soph_err(dev, "venc send frame", cret);
 	/* A refused SendFrame (encoder queue full) still falls through to
 	 * GetStream: the encoder is busy exactly when its output needs
@@ -951,14 +986,57 @@ int soph_pipeline_encode_one(struct soph_v4l2_dev *dev,
 	 * handful of frames.
 	 */
 
-	memset(&stream, 0, sizeof(stream));
-	/* pstPack stays NULL: GetStream allocates the pack array and the
-	 * caller frees it. That is the MPI's contract, mirrored from the
-	 * vendor's own ioctl handler.
+	/* The vendor contract, spelled out in its own source ("user should
+	 * keep get frame until success"): a successful SendFrame takes the
+	 * global vcodec mutex and only a completed GetStream releases it. A
+	 * timed-out GetStream returns with the lock still held by THIS task,
+	 * so once a frame is sent the pair must be closed before this
+	 * function returns -- abandoning it leaks the mutex, and the next
+	 * DestroyChn deadlocks in EnterVcodecLock. Observed on the board as
+	 * STREAMOFF hung forever after the feeder exited mid-pair.
+	 *
+	 * Hence: sent frames retry GetStream on the benign codes, generously
+	 * bounded; an unsent cycle keeps the old single-try behaviour (no
+	 * lock is at stake).
 	 */
-	cret = CVI_VENC_GetStream(SOPH_VENC_CHN, &stream, SOPH_GET_STREAM_MS);
+	tries = sent ? SOPH_GET_STREAM_RETRIES : 1;
+	for (i = 0; i < tries; i++) {
+		memset(&stream, 0, sizeof(stream));
+		/* pstPack stays NULL: GetStream allocates the pack array and
+		 * the caller frees it -- on every attempt, success or not.
+		 */
+		cret = CVI_VENC_GetStream(SOPH_VENC_CHN, &stream,
+					  SOPH_GET_STREAM_MS);
+		if (cret == CVI_SUCCESS || !soph_is_no_frame(cret))
+			break;
+		vfree(stream.pstPack);
+		stream.pstPack = NULL;
+		if (i == 0)
+			dev_info_ratelimited(&dev->pdev->dev,
+					     "venc busy after send, retrying (0x%08x)\n",
+					     (u32)cret);
+	}
 	if (cret != CVI_SUCCESS) {
 		vfree(stream.pstPack);
+		if (sent) {
+			/* The encoder never finished a frame it accepted. The
+			 * global vcodec mutex is held BY THIS TASK (SendFrame
+			 * took it; only a completed GetStream releases it), so
+			 * release it here as its legal owner before failing
+			 * the stream — leaving it held turns one stalled
+			 * frame into a chip-wide wedge: every later CreateChn
+			 * (including the app's own rebuild) blocks forever in
+			 * EnterVcodecLock, observed on the board as D-state
+			 * STREAMON. With the lock released, normal teardown
+			 * and the next STREAMON recover the channel fully.
+			 */
+			vcodec_unlock();
+			dev->venc_dead = true;
+			dev_crit(&dev->pdev->dev,
+				 "venc never returned a sent frame (0x%08x); released the vcodec lock; venc teardown disabled (hung core) -- capture needs a module reload\n",
+				 (u32)cret);
+			return -EIO;
+		}
 		if (soph_is_no_frame(cret))
 			return -EAGAIN;
 		return soph_err(dev, "venc get stream", cret);
@@ -971,6 +1049,21 @@ int soph_pipeline_encode_one(struct soph_v4l2_dev *dev,
 	for (i = 0; i < stream.u32PackCount; i++) {
 		VENC_PACK_S *p = &stream.pstPack[i];
 		u32 len = p->u32Len - p->u32Offset;
+
+		/* Bring-up instrumentation: the first frames' pack geometry,
+		 * to pin the vendor's offset/len convention against what the
+		 * bitstream actually decodes as. Cheap and rate-limited by
+		 * nature; remove once the convention is proven on hardware.
+		 */
+		if (dbg_packs > 0) {
+			dbg_packs--;
+			dev_info(&dev->pdev->dev,
+				 "pack %u/%u: len=%u off=%u type=%u virt=%p phys=%llx head=%*ph\n",
+				 i, stream.u32PackCount, p->u32Len,
+				 p->u32Offset, p->DataType.enH264EType,
+				 p->pu8Addr, p->u64PhyAddr,
+				 8, p->pu8Addr + p->u32Offset);
+		}
 
 		/* pu8Addr is a kernel virtual address and the driver has
 		 * already done the cache maintenance; SPS/PPS arrive as

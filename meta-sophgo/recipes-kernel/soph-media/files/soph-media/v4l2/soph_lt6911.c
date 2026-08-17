@@ -283,6 +283,274 @@ out_unlock:
 }
 
 /* ------------------------------------------------------------------ */
+/* EDID storage.                                                       */
+/*                                                                     */
+/* The bridge serves its EDID from an SPI flash it owns, driven through */
+/* the command register 0x5A in the enable bank (0x81 erase, 0x90       */
+/* write, 0xA0 read; 0x84/0x88/0x20 are chip-select / write-enable      */
+/* states). The sequences are transcribed step for step from Sipeed's   */
+/* nanokvm_update_edid.c via the field-proven Go port — the ordering    */
+/* of the writes IS the protocol. Everything runs under br->lock, so    */
+/* EDID traffic serializes against the poller and the pipeline's        */
+/* signal reads.                                                       */
+
+#define LT_EDID_SIZE		256
+#define LT_EDID_CHUNK		32
+
+#define LT_REG_FLASH_CMD	0x5A
+#define LT_REG_FLASH_LEN	0x5E
+#define LT_REG_FLASH_CTL	0x58
+#define LT_REG_FLASH_DATA	0x59
+#define LT_REG_FLASH_ADDH	0x5B
+#define LT_REG_FLASH_ADDM	0x5C
+#define LT_REG_FLASH_ADDL	0x5D
+#define LT_REG_FLASH_READ	0x5F
+
+#define LT_BANK_GATE		0x81
+#define LT_REG_FLASH_GATE	0x08
+#define LT_GATE_OK		0xEE
+#define LT_GATE_ACK		0xAE
+
+struct lt_regval {
+	u8 reg, val;
+};
+
+static int lt_write_seq(struct soph_lt6911 *br, const struct lt_regval *seq,
+			int n)
+{
+	int i, ret;
+
+	for (i = 0; i < n; i++) {
+		ret = lt_write(br, seq[i].reg, seq[i].val);
+		if (ret)
+			return ret;
+	}
+	return 0;
+}
+
+/* Register address followed by n data bytes in one transfer — the
+ * vendor's i2c_write_bytes.
+ */
+static int lt_write_bytes(struct soph_lt6911 *br, u8 reg, const u8 *data,
+			  int len)
+{
+	u8 buf[LT_EDID_CHUNK + 1];
+	int ret;
+
+	if (len > LT_EDID_CHUNK)
+		return -EINVAL;
+	buf[0] = reg;
+	memcpy(&buf[1], data, len);
+	ret = i2c_master_send(br->client, buf, len + 1);
+	if (ret < 0)
+		return ret;
+	return ret == len + 1 ? 0 : -EIO;
+}
+
+/* The vendor's flash-ready gate: must read 0xEE before erase or write
+ * may proceed, then gets acknowledged.
+ */
+static int lt_check_gate(struct soph_lt6911 *br, const char *stage)
+{
+	u8 v;
+	int ret;
+
+	ret = lt_bank(br, LT_BANK_GATE);
+	if (ret)
+		return ret;
+	ret = lt_read(br, LT_REG_FLASH_GATE, &v, 1);
+	if (ret)
+		return ret;
+	if (v != LT_GATE_OK) {
+		dev_err(&br->client->dev,
+			"lt6911: %s: flash gate reads 0x%02x, want 0x%02x\n",
+			stage, v, LT_GATE_OK);
+		return -EBUSY;
+	}
+	ret = lt_write(br, LT_REG_FLASH_GATE, LT_GATE_ACK);
+	if (ret)
+		return ret;
+	return lt_write(br, LT_REG_FLASH_GATE, LT_GATE_OK);
+}
+
+/* Read the stored EDID (256 bytes at flash 0x018000). Caller holds
+ * br->lock.
+ */
+static int lt_edid_read_locked(struct soph_lt6911 *br, u8 *out)
+{
+	int i, ret;
+
+	ret = lt_window_open(br);
+	if (ret)
+		return ret;
+	ret = lt_bank(br, LT_BANK_CTL);
+	if (ret)
+		goto out;
+	ret = lt_write(br, LT_REG_FLASH_CMD, 0x84);
+	if (ret)
+		goto out;
+	ret = lt_write(br, LT_REG_FLASH_CMD, 0x80);
+	if (ret)
+		goto out;
+
+	for (i = 0; i < LT_EDID_SIZE / LT_EDID_CHUNK; i++) {
+		const struct lt_regval seq[] = {
+			{ LT_REG_FLASH_LEN, 0x5F },
+			{ LT_REG_FLASH_CMD, 0xA0 },
+			{ LT_REG_FLASH_CMD, 0x80 },
+			{ LT_REG_FLASH_ADDH, 0x01 },
+			{ LT_REG_FLASH_ADDM, 0x80 },
+			{ LT_REG_FLASH_ADDL, (u8)(LT_EDID_CHUNK * i) },
+			{ LT_REG_FLASH_CMD, 0x90 },
+			{ LT_REG_FLASH_CMD, 0x80 },
+			{ LT_REG_FLASH_CTL, 0x21 },
+		};
+
+		ret = lt_write_seq(br, seq, ARRAY_SIZE(seq));
+		if (ret)
+			goto out;
+		ret = lt_read(br, LT_REG_FLASH_READ,
+			      out + (size_t)LT_EDID_CHUNK * i, LT_EDID_CHUNK);
+		if (ret)
+			goto out;
+	}
+out:
+	lt_window_close(br);
+	return ret;
+}
+
+/* Structural EDID check: fixed header, both 128-byte blocks summing to
+ * zero — what the vendor tool requires before it will program anything.
+ * A bad EDID is worse than none: the host believes it.
+ */
+static bool lt_edid_valid(const u8 *e)
+{
+	u8 s0 = 0, s1 = 0;
+	int i;
+
+	if (e[0] != 0x00 || e[7] != 0x00)
+		return false;
+	for (i = 1; i < 7; i++)
+		if (e[i] != 0xFF)
+			return false;
+	for (i = 0; i < 128; i++)
+		s0 += e[i];
+	for (i = 128; i < 256; i++)
+		s1 += e[i];
+	return s0 == 0 && s1 == 0;
+}
+
+/* Erase and program the EDID flash. Caller holds br->lock. Slow by
+ * nature: the erase is unacknowledged and simply waited out.
+ */
+static int lt_edid_write_locked(struct soph_lt6911 *br, const u8 *edid)
+{
+	static const struct lt_regval erase_pre[] = {
+		{ LT_REG_FLASH_LEN, 0xDF }, { LT_REG_FLASH_CTL, 0x00 },
+		{ LT_REG_FLASH_DATA, 0x51 }, { LT_REG_FLASH_CMD, 0x10 },
+		{ LT_REG_FLASH_CMD, 0x00 }, { LT_REG_FLASH_CTL, 0x21 },
+	};
+	static const struct lt_regval erase_cmd[] = {
+		{ LT_REG_FLASH_CMD, 0x80 }, { LT_REG_FLASH_CMD, 0x84 },
+		{ LT_REG_FLASH_CMD, 0x80 }, { LT_REG_FLASH_ADDH, 0x01 },
+		{ LT_REG_FLASH_ADDM, 0x80 }, { LT_REG_FLASH_ADDL, 0x00 },
+		{ LT_REG_FLASH_CMD, 0x81 }, { LT_REG_FLASH_CMD, 0x80 },
+	};
+	static const u8 blank[LT_EDID_CHUNK];
+	int i, ret, passes;
+
+	ret = lt_window_open(br);
+	if (ret)
+		return ret;
+	ret = lt_bank(br, LT_BANK_CTL);
+	if (ret)
+		goto out;
+	ret = lt_write_seq(br, erase_pre, ARRAY_SIZE(erase_pre));
+	if (ret)
+		goto out;
+
+	/* The vendor re-opens the window between the two erase stages. */
+	ret = lt_window_open(br);
+	if (ret)
+		goto out;
+	ret = lt_bank(br, LT_BANK_CTL);
+	if (ret)
+		goto out;
+	ret = lt_write_seq(br, erase_cmd, ARRAY_SIZE(erase_cmd));
+	if (ret)
+		goto out;
+	msleep(500);
+
+	ret = lt_check_gate(br, "post-erase");
+	if (ret)
+		goto out;
+
+	ret = lt_window_open(br);
+	if (ret)
+		goto out;
+	ret = lt_bank(br, LT_BANK_CTL);
+	if (ret)
+		goto out;
+	{
+		static const struct lt_regval wr_en[] = {
+			{ LT_REG_FLASH_CMD, 0x84 }, { LT_REG_FLASH_CMD, 0x80 },
+			{ LT_REG_FLASH_CMD, 0x84 }, { LT_REG_FLASH_CMD, 0x80 },
+		};
+		ret = lt_write_seq(br, wr_en, ARRAY_SIZE(wr_en));
+		if (ret)
+			goto out;
+	}
+
+	/* One pass beyond the data: the extra pass clears the version-
+	 * string page at 0x81xx.
+	 */
+	passes = LT_EDID_SIZE / LT_EDID_CHUNK + 1;
+	for (i = 0; i < passes; i++) {
+		bool last = (i == passes - 1);
+		const struct lt_regval pre[] = {
+			{ LT_REG_FLASH_LEN, 0xDF },
+			{ LT_REG_FLASH_CMD, 0x20 },
+			{ LT_REG_FLASH_CMD, 0x00 },
+			{ LT_REG_FLASH_CTL, 0x21 },
+		};
+		const struct lt_regval post[] = {
+			{ LT_REG_FLASH_LEN, 0xC0 },
+			{ LT_REG_FLASH_CMD, 0x90 },
+			{ LT_REG_FLASH_CMD, 0x80 },
+			{ LT_REG_FLASH_CMD, last ? 0x88 : 0x84 },
+			{ LT_REG_FLASH_CMD, 0x80 },
+		};
+
+		ret = lt_write_seq(br, pre, ARRAY_SIZE(pre));
+		if (ret)
+			goto out;
+		ret = lt_write_bytes(br, LT_REG_FLASH_DATA,
+				     last ? blank : edid + (size_t)LT_EDID_CHUNK * i,
+				     LT_EDID_CHUNK);
+		if (ret)
+			goto out;
+		ret = lt_write(br, LT_REG_FLASH_ADDH, 0x01);
+		if (ret)
+			goto out;
+		ret = lt_write(br, LT_REG_FLASH_ADDM, last ? 0x81 : 0x80);
+		if (ret)
+			goto out;
+		ret = lt_write(br, LT_REG_FLASH_ADDL,
+			       last ? 0x00 : (u8)(LT_EDID_CHUNK * i));
+		if (ret)
+			goto out;
+		ret = lt_write_seq(br, post, ARRAY_SIZE(post));
+		if (ret)
+			goto out;
+	}
+
+	ret = lt_check_gate(br, "post-write");
+out:
+	lt_window_close(br);
+	return ret;
+}
+
+/* ------------------------------------------------------------------ */
 /* Poller: the only hotplug/mode-change detection this board has.      */
 
 static void lt6911_poll(struct work_struct *work)
@@ -469,6 +737,71 @@ static int lt6911_get_fmt(struct v4l2_subdev *sd,
 	return 0;
 }
 
+/* EDID via the standard subdev ioctls, replacing the old userspace i2c
+ * tooling: the kernel owns the bridge's address, so this is the only path
+ * that cannot race the poller's bank-switched transactions. The core has
+ * already copied edid->edid into kernel memory (array-argument handling in
+ * video_usercopy), so plain memcpy is correct here.
+ */
+static int lt6911_get_edid(struct v4l2_subdev *sd, struct v4l2_edid *edid)
+{
+	struct soph_lt6911 *br = sd_to_lt6911(sd);
+	u8 buf[LT_EDID_SIZE];
+	int ret;
+
+	if (edid->pad != 0)
+		return -EINVAL;
+	if (edid->start_block == 0 && edid->blocks == 0) {
+		edid->blocks = LT_EDID_SIZE / 128;
+		return 0;
+	}
+	if (edid->start_block >= LT_EDID_SIZE / 128)
+		return -EINVAL;
+	if (edid->blocks > LT_EDID_SIZE / 128 - edid->start_block)
+		edid->blocks = LT_EDID_SIZE / 128 - edid->start_block;
+
+	mutex_lock(&br->lock);
+	ret = lt_edid_read_locked(br, buf);
+	mutex_unlock(&br->lock);
+	if (ret)
+		return ret;
+
+	memcpy(edid->edid, buf + (size_t)edid->start_block * 128,
+	       (size_t)edid->blocks * 128);
+	return 0;
+}
+
+static int lt6911_set_edid(struct v4l2_subdev *sd, struct v4l2_edid *edid)
+{
+	struct soph_lt6911 *br = sd_to_lt6911(sd);
+	u8 verify[LT_EDID_SIZE];
+	int ret;
+
+	if (edid->pad != 0 || edid->start_block != 0)
+		return -EINVAL;
+	/* Whole-EDID programming only: this is a flash erase/write cycle,
+	 * not a RAM update, and partial writes have no meaning to it.
+	 */
+	if (edid->blocks != LT_EDID_SIZE / 128)
+		return -EINVAL;
+	if (!lt_edid_valid(edid->edid))
+		return -EINVAL;
+
+	mutex_lock(&br->lock);
+	ret = lt_edid_write_locked(br, edid->edid);
+	if (!ret) {
+		/* Read back rather than trusting the write: a flash write
+		 * that reports success and stores nothing is exactly the
+		 * failure this guards.
+		 */
+		ret = lt_edid_read_locked(br, verify);
+		if (!ret && memcmp(verify, edid->edid, LT_EDID_SIZE))
+			ret = -EIO;
+	}
+	mutex_unlock(&br->lock);
+	return ret;
+}
+
 static int lt6911_subscribe_event(struct v4l2_subdev *sd, struct v4l2_fh *fh,
 				  struct v4l2_event_subscription *sub)
 {
@@ -496,6 +829,8 @@ static const struct v4l2_subdev_pad_ops lt6911_pad_ops = {
 	.query_dv_timings = lt6911_query_dv_timings,
 	.g_dv_timings = lt6911_g_dv_timings,
 	.dv_timings_cap = lt6911_dv_timings_cap,
+	.get_edid = lt6911_get_edid,
+	.set_edid = lt6911_set_edid,
 };
 
 static const struct v4l2_subdev_ops lt6911_ops = {
