@@ -166,9 +166,6 @@ MODULE_PARM_DESC(bridge_reset,
  */
 #define SOPH_VENC_BLOCK		(-1)
 
-/* First-frames pack-geometry instrumentation; see the copy loop. */
-static int dbg_packs = 12;
-
 /* The board's lane routing, bridge → SoC. Slot 0 is the clock lane. Board
  * fact, not derivable from anything.
  */
@@ -1063,21 +1060,6 @@ int soph_pipeline_encode_one(struct soph_v4l2_dev *dev,
 	for (i = 0; i < stream.u32PackCount; i++) {
 		VENC_PACK_S *p = &stream.pstPack[i];
 		u32 len = p->u32Len - p->u32Offset;
-
-		/* Bring-up instrumentation: the first frames' pack geometry,
-		 * to pin the vendor's offset/len convention against what the
-		 * bitstream actually decodes as. Cheap and rate-limited by
-		 * nature; remove once the convention is proven on hardware.
-		 */
-		if (dbg_packs > 0) {
-			dbg_packs--;
-			dev_info(&dev->pdev->dev,
-				 "pack %u/%u: len=%u off=%u type=%u virt=%p phys=%llx head=%*ph\n",
-				 i, stream.u32PackCount, p->u32Len,
-				 p->u32Offset, p->DataType.enH264EType,
-				 p->pu8Addr, p->u64PhyAddr,
-				 8, p->pu8Addr + p->u32Offset);
-		}
 
 		/* pu8Addr is a kernel virtual address and the driver has
 		 * already done the cache maintenance; SPS/PPS arrive as
