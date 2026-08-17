@@ -1,7 +1,11 @@
 CONFIG_SCLR_TEST = 0
 CONFIG_CVI_LOG = 1
 CONFIG_REG_DUMP = 1
-CONFIG_TILE_MODE = 1
+# Both reference trees (Sipeed NanoKVM, scpcom develop) build with tile
+# mode off and hardcode is_tile = false; the two-pass tiled scaling path
+# is untested on this board and can engage silently on wide offline
+# channels.
+CONFIG_TILE_MODE = 0
 CONFIG_RGN_EX = 0
 
 $(MODPREFIX)_vpss-objs += chip/$(CVIARCH_L)/vip_img.o

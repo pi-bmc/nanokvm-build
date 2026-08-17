@@ -889,7 +889,12 @@ static int base_probe(struct platform_device *pdev)
 
 	vip_sys_set_offline(VIP_SYS_AXI_BUS_SC_TOP, true);
 	vip_sys_set_offline(VIP_SYS_AXI_BUS_ISP_RAW, true);
-	vip_sys_set_offline(VIP_SYS_AXI_BUS_ISP_YUV, false);
+	/* Offline like the other two: both reference trees (Sipeed NanoKVM
+	 * and scpcom develop) put the ISP YUV write master on the offline
+	 * AXI path; realtime here changes DDR arbitration for the exact
+	 * bus that carries VI→VPSS YUV.
+	 */
+	vip_sys_set_offline(VIP_SYS_AXI_BUS_ISP_YUV, true);
 
 	ndev->notifier.notifier_call = base_pm_notif;
 	register_pm_notifier(&ndev->notifier);

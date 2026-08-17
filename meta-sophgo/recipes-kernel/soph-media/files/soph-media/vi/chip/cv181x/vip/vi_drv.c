@@ -1488,7 +1488,12 @@ void _ispblk_isptop_cfg_update(struct isp_ctx *ctx, const enum cvi_isp_raw raw_n
 	} else if (_is_be_post_online(ctx)) {
 		if (ctx->isp_pipe_cfg[raw_num].is_yuv_bypass_path) { //YUV sensor
 			scene_ctrl.bits.RAW2YUV_422_ENABLE = 1;
-			//scene_ctrl.bits.DCI_RGB0YUV1 = 1;
+			/* Both reference trees set the DCI stats domain here;
+			 * leaving the reset value (0 = RGB) makes DCI sample
+			 * the wrong domain for a YUV sensor — which is the
+			 * LT6911 case on this board.
+			 */
+			scene_ctrl.bits.DCI_RGB0YUV1 = 1;
 			scene_ctrl.bits.HDR_ENABLE = 0;
 
 			scene_ctrl.bits.BE2RAW_L_ENABLE = 0;
@@ -1497,7 +1502,7 @@ void _ispblk_isptop_cfg_update(struct isp_ctx *ctx, const enum cvi_isp_raw raw_n
 			scene_ctrl.bits.BE_RDMA_S_ENABLE = 0;
 		} else { //RGB sensor
 			scene_ctrl.bits.RAW2YUV_422_ENABLE = 0;
-			//scene_ctrl.bits.DCI_RGB0YUV1 = 0;
+			scene_ctrl.bits.DCI_RGB0YUV1 = 0;
 			scene_ctrl.bits.HDR_ENABLE = ctx->isp_pipe_cfg[raw_num].is_hdr_on;
 
 			scene_ctrl.bits.BE2RAW_L_ENABLE = 1;
