@@ -130,7 +130,9 @@ old_itb=$( [ -f "$BOOT_MNT/boot_${target}.itb" ] && stat -c %s "$BOOT_MNT/boot_$
 
 # --- write the rootfs slot -------------------------------------------------
 log "writing rootfs.squashfs to $target_part ($rootfs_sz B)"
-dd if="$STAGE/rootfs.squashfs" of="$target_part" bs=1M conv=fsync 2>/dev/null \
+# notrunc matters if $target_part is ever a regular file rather than the block
+# device it normally is -- dd would otherwise shorten it to the payload.
+dd if="$STAGE/rootfs.squashfs" of="$target_part" bs=1M conv=notrunc,fsync 2>/dev/null \
     || die "writing $target_part failed"
 sync
 

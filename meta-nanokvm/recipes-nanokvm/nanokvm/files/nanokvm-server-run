@@ -16,20 +16,74 @@
 # up the newly installed tree. ActiveAppDir() in
 # server/service/application/service.go mirrors this walk; keep them in sync.
 #
+# Before the walk, the writable install is SEEDED from the factory copy when
+# neither app nor app.prev holds a server binary -- a freshly flashed card, a
+# wiped data partition, or the tmpfs the initramfs falls back to when the data
+# partition will not mount. The point is that the server then runs from
+# /var/lib/nanokvm/app on every boot, never straight off the read-only
+# squashfs: that is the one install path that can be signalled, replaced,
+# self-updated and rolled back, and supervising a mix of the two has meant
+# `kill`/`killall` against a /kvmapp-launched server not taking the process
+# down. Seeding is best-effort -- a full or read-only data partition just
+# falls through to /kvmapp as before, so the BMC still comes up.
+#
 # busybox init does not throttle respawn loops (its own docs say so), so a
 # crash-looping server is throttled here instead: an exit within CRASH_SECS
 # of launch sleeps CRASH_SLEEP before init's next attempt. Healthy restarts
 # pay nothing.
 
 DAEMON=NanoKVM-Server
+APP_DIR=/var/lib/nanokvm/app
+BACKUP_DIR=/var/lib/nanokvm/app.prev
+FACTORY_DIR=/kvmapp
 CRASH_SECS=10
 CRASH_SLEEP=5
 
 started=$(cut -d. -f1 /proc/uptime)
 
-for dir in /var/lib/nanokvm/app /var/lib/nanokvm/app.prev /kvmapp; do
+# Copy the factory server binary into the writable install. Prints nothing;
+# the caller reports the outcome.
+seed_app_dir() {
+    src=${FACTORY_DIR}/server/${DAEMON}
+    dst=${APP_DIR}/server/${DAEMON}
+    tmp=${APP_DIR}/server/.${DAEMON}.seed
+
+    [ -x "${src}" ] || return 1
+    mkdir -p "${APP_DIR}/server" || return 1
+
+    # Copy under a temporary name and rename into place, with the copied data
+    # flushed in between. A power cut mid-copy must not leave a truncated
+    # binary at ${dst}: the cascade below tests only for an executable file,
+    # would prefer that one over every fallback, and would respawn it forever.
+    # rename(2) within the data partition is atomic, so ${dst} either does not
+    # exist or is the whole binary.
+    rm -f "${tmp}"
+    if ! cp "${src}" "${tmp}"; then
+        rm -f "${tmp}"
+        return 1
+    fi
+    chmod 0755 "${tmp}" || { rm -f "${tmp}"; return 1; }
+    sync
+    mv -f "${tmp}" "${dst}" || { rm -f "${tmp}"; return 1; }
+}
+
+# Seed only when NEITHER writable install has a server binary. Testing for
+# existence rather than runnability is deliberate on both counts: a binary
+# uploaded to ${APP_DIR} without its exec bit is a botched hand-install, not
+# free space to overwrite, and a lone ${BACKUP_DIR} means an update failed
+# part-way -- reseeding would shadow the rollback candidate with the older
+# factory build.
+if [ ! -e "${APP_DIR}/server/${DAEMON}" ] && [ ! -e "${BACKUP_DIR}/server/${DAEMON}" ]; then
+    if seed_app_dir; then
+        echo "${0##*/}: seeded ${APP_DIR} from ${FACTORY_DIR}" >&2
+    else
+        echo "${0##*/}: could not seed ${APP_DIR} from ${FACTORY_DIR}" >&2
+    fi
+fi
+
+for dir in "${APP_DIR}" "${BACKUP_DIR}" "${FACTORY_DIR}"; do
     [ -x "${dir}/server/${DAEMON}" ] || continue
-    [ "${dir}" = /var/lib/nanokvm/app ] || echo "${0##*/}: running from ${dir}" >&2
+    [ "${dir}" = "${APP_DIR}" ] || echo "${0##*/}: running from ${dir}" >&2
     "${dir}/server/${DAEMON}"
     ended=$(cut -d. -f1 /proc/uptime)
     if [ $((ended - started)) -lt ${CRASH_SECS} ]; then

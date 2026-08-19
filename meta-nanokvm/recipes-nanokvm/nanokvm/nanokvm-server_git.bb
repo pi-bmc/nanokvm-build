@@ -104,6 +104,10 @@ INHIBIT_PACKAGE_DEBUG_SPLIT = "${UPX_COMPRESS}"
 # Self-updates never touch it: they install to /var/lib/nanokvm/app on the
 # persistent data partition, and the init script launches the first runnable
 # of app, app.prev, /kvmapp — so /kvmapp is the always-bootable fallback.
+# On a board where neither app nor app.prev is populated the launcher first
+# copies this binary into /var/lib/nanokvm/app and runs it from there, so the
+# supervised process normally lives on the writable path rather than on the
+# squashfs; /kvmapp is only exec'd directly when that copy cannot be made.
 KVMAPP_DIR = "/kvmapp"
 
 do_install() {
@@ -111,7 +115,8 @@ do_install() {
     install -m 0755 ${B}/NanoKVM-Server ${D}${KVMAPP_DIR}/server/NanoKVM-Server
 
     # The launcher busybox init runs under its inittab ::respawn entry (see
-    # the busybox inittab in recipes-core/busybox/files). It walks the
+    # the busybox inittab in recipes-core/busybox/files). It seeds
+    # /var/lib/nanokvm/app from /kvmapp when empty, then walks the
     # app -> app.prev -> /kvmapp cascade on every (re)start and throttles
     # crash loops; the server restarts itself by simply exiting
     # (server/service/application RestartService). This replaced the sysv

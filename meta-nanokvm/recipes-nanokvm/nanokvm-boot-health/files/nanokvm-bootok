@@ -32,13 +32,21 @@ for arg in $(cat /proc/cmdline 2>/dev/null); do
 done
 
 # The slot the initramfs actually mounted, which is the one that has proven
-# anything. Fall back to the requested slot if the breadcrumb is missing.
+# anything. Degrade to the requested slot if the breadcrumb is missing or
+# unreadable: confirming the slot U-Boot asked for is a guess, but confirming
+# nothing is worse -- the counter would keep decaying and a perfectly healthy
+# board would switch slots every few boots.
 act=$(cat "$BREADCRUMB" 2>/dev/null || true)
-[ -n "$act" ] || act=$req
+case "$act" in
+    a|b) ;;
+    "")  act=$req ;;
+    *)   log "breadcrumb says '$act', which is not a slot; falling back to the cmdline"
+         act=$req ;;
+esac
 
 case "$act" in
     a|b) ;;
-    *)   log "no usable slot name (cmdline '$req', breadcrumb '$act'); nothing to confirm"
+    *)   log "no usable slot name (cmdline '$req', breadcrumb '$(cat "$BREADCRUMB" 2>/dev/null || true)'); nothing to confirm"
          exit 0 ;;
 esac
 
