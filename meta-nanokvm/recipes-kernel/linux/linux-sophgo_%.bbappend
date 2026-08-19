@@ -142,16 +142,18 @@ do_configure:append:sg2002-licheervnano() {
     fi
 }
 
-# U-Boot stages the raw Image at kernel_addr_r=0x81000000 and the DTB at
-# fdt_addr_r=0x82000000 (the stock licheerv_nano.h values). The Image must not
-# reach the DTB, and neither must the kernel's runtime footprint after booti
-# relocates it to 0x80200000 -- so the binding constraint is the Image header's
-# image_size (text+data+bss), not the file size. Check the stricter of the two
-# against a 14 MiB budget, leaving 2 MiB of headroom under the 16 MiB window.
+# The kernel now ships inside a FIT (nanokvm-boot-fit) that U-Boot stages at
+# kernel_addr_r=0x83000000 and extracts down to the 0x80200000 run address, so
+# the staging address no longer bounds the kernel. What bounds it is the FIT's
+# own FDT load address, fdt_addr_r=0x82000000: the running kernel must not
+# reach it. That is 30 MiB from 0x80200000; budget 28 MiB, keeping 2 MiB of
+# headroom, which is double the old extlinux-era window.
 #
-# Without this the failure mode is a silent, intermittent brick: U-Boot happily
-# overwrites the DTB and the kernel dies before the console is up.
-KERNEL_IMAGE_MAXSIZE_BYTES = "14680064"
+# The binding number is the Image header's image_size (text+data+bss), not the
+# file size, because it is the runtime footprint that collides. Without this
+# check the failure mode is a silent, intermittent brick: the kernel overwrites
+# its own device tree and dies before the console is up.
+KERNEL_IMAGE_MAXSIZE_BYTES = "29360128"
 
 # NB: no $(( )) arithmetic and no ${braces} on shell locals below. bitbake parses
 # shell task bodies to harvest variable references: it raises
@@ -176,10 +178,11 @@ do_compile:append:sg2002-licheervnano() {
 
     for sz in "$filesz" "$imagesz"; do
         if [ "$sz" -gt "$budget" ]; then
-            bbfatal "kernel too large: $sz B > $budget B budget. It would overrun" \
-                    "fdt_addr_r=0x82000000 when U-Boot stages the Image at" \
-                    "kernel_addr_r=0x81000000. Trim nanokvm.cfg, or restore the raised" \
-                    "load addresses in the u-boot recipe."
+            bbfatal "kernel too large: $sz B > $budget B budget. Running at" \
+                    "0x80200000 it would overrun the FIT's FDT load address" \
+                    "fdt_addr_r=0x82000000. Trim nanokvm.cfg, or re-plan the load" \
+                    "addresses in u-boot patch 0009, boot.its.in and this budget" \
+                    "together."
         fi
     done
 }

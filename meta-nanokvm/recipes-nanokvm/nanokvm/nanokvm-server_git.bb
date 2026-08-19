@@ -9,7 +9,7 @@ inherit go-mod go
 # github.com/BMCPi/NanoKVM -- GO_IMPORT must match the module path, not the URL.
 GO_IMPORT = "github.com/BMCPi/NanoKVM"
 SRCREV = "${AUTOREV}"
-SRC_URI = "git://github.com/pi-bmc/nanokvm-app;branch=v4l2;protocol=https \
+SRC_URI = "git://github.com/pi-bmc/nanokvm-app;branch=edk2;protocol=https \
            file://nanokvm-server-run"
 
 S = "${WORKDIR}/git"
@@ -56,11 +56,10 @@ do_compile() {
     # read-only) module/toolchain cache writable so cleandirs/rm can remove it.
     export GOFLAGS="-mod=mod"
 
-    # Only the server is built/installed. The repo's other cmd/ tools
-    # (rpiboot, fw_env) are developer CLIs the server never execs -- it does
-    # rpiboot-mode entry in-process (server/service/power) and owns the
-    # firmware image env itself (server/service/firmware) -- so they have no
-    # place in the image.
+    # Only the server is built/installed. The repo's other cmd/ tools are
+    # developer CLIs the server never execs -- it does host-boot-mode entry
+    # in-process (server/service/power) -- so they have no place in the image.
+    # (fw_setenv, which the A/B flow does use, comes from libubootenv-bin.)
     ${GO} build -v -trimpath -modcacherw -ldflags "-s -w" \
         -o ${B}/NanoKVM-Server ./cmd/server
 

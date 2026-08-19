@@ -18,15 +18,18 @@ SRC_URI = "git://source.denx.de/u-boot/u-boot.git;protocol=https;branch=master \
            file://0005-licheerv-nano-efuse-mac.patch \
            file://0006-licheerv-nano-ramdisk-addr.patch \
            file://0008-licheerv-nano-mux-i2c4.patch \
+           file://0009-licheerv-nano-ab-boot-env.patch \
            "
 
-# 0002-licheerv-nano-raise-load-addrs.patch is gone. It existed because the old
-# ~28 MiB FIT (boot.sd) staged at the stock kernel_addr_r=0x81000000 overlapped
-# the kernel's own 0x80200000 run region, so bootm aborted with "new format
-# image overwritten". The kernel is now trimmed to fit the stock window
-# (kernel_addr_r=0x81000000, fdt_addr_r=0x82000000, scriptaddr=0x80c00000) and
-# is loaded as a raw Image via booti, so the upstream addresses stand. The
-# linux-sophgo bbappend enforces the size budget that makes this safe.
+# 0002-licheerv-nano-raise-load-addrs.patch is gone; 0009 supersedes it. 0002
+# existed because the old ~28 MiB FIT (boot.sd) staged at the stock
+# kernel_addr_r=0x81000000 overlapped the kernel's own 0x80200000 run region, so
+# bootm aborted with "new format image overwritten". The image is back on a FIT
+# (boot_<slot>.itb, kernel+FDT+initramfs), so staging must again sit clear of the
+# run region: 0009 moves kernel_addr_r to 0x83000000 and adds the A/B env. The
+# kernel budget is now bounded by fdt_addr_r=0x82000000 (30 MiB from the
+# 0x80200000 run address) rather than by the staging address; the linux-sophgo
+# bbappend asserts it.
 #
 # Patch numbering is left as-is rather than resequenced, so the remaining files
 # keep matching the commit history that introduced them.
@@ -66,6 +69,46 @@ do_configure:append() {
     # LOCALVERSION_AUTO defaults to y and makes setlocalversion run git describe
     # against ${S}, tainting the version with the checkout's SHA.
     "${S}/scripts/config" --file "${B}/.config" --disable LOCALVERSION_AUTO
+
+    # --- Persistent, crash-safe environment + A/B bootcount -----------------
+    #
+    # Stock licheerv_nano has no environment at all ("Loading Environment from
+    # nowhere"), so there is nowhere for A/B state to live. Put it in raw MMC
+    # sectors in the 1 MiB gap between the MBR and p1 (verified all-zero; the
+    # boot ROM only reads the first ~43 KiB of that gap), NOT in a filesystem:
+    # a raw redundant env is two copies with a validity flag, switched
+    # atomically, so a power cut mid-write always leaves one valid copy. That is
+    # the one piece of mutable boot state, and it is crash-safe by construction.
+    #
+    #   0x80000 (512 KiB) primary env    64 KiB
+    #   0x90000 (576 KiB) redundant env  64 KiB
+    #   ends at 0xA0000 (640 KiB), clear of p1 at 0x100000 (1 MiB)
+    #
+    # The image pre-seeds the primary copy (nanokvm-uboot-env), so a freshly
+    # flashed card boots slot a with a valid CRC and no warning.
+    "${S}/scripts/config" --file "${B}/.config" --disable ENV_IS_NOWHERE
+    "${S}/scripts/config" --file "${B}/.config" --enable  ENV_IS_IN_MMC
+    "${S}/scripts/config" --file "${B}/.config" --enable  ENV_REDUNDANT
+    "${S}/scripts/config" --file "${B}/.config" --set-val ENV_SIZE 0x10000
+    "${S}/scripts/config" --file "${B}/.config" --set-val ENV_OFFSET 0x80000
+    "${S}/scripts/config" --file "${B}/.config" --set-val ENV_OFFSET_REDUND 0x90000
+    "${S}/scripts/config" --file "${B}/.config" --set-val ENV_MMC_DEVICE_INDEX 0
+    "${S}/scripts/config" --file "${B}/.config" --set-val SYS_MMC_ENV_DEV 0
+
+    # BOOTCOUNT_ENV only persists the counter while upgrade_available is set,
+    # which userspace sets only around an update. Normal boots therefore write
+    # nothing at all -- the boot path stays read-only in steady state, and the
+    # counter costs an env write only while an update is on probation.
+    "${S}/scripts/config" --file "${B}/.config" --enable  BOOTCOUNT_LIMIT
+    "${S}/scripts/config" --file "${B}/.config" --enable  BOOTCOUNT_ENV
+
+    # Boot straight to the A/B FIT flow instead of scanning for extlinux. One
+    # fatload of one hash-verified file is the smallest job we can hand U-Boot
+    # on a board whose SD reads are marginal. bootstd stays compiled in, so
+    # `bootflow scan` is still there to rescue a board by hand.
+    "${S}/scripts/config" --file "${B}/.config" --disable BOOTSTD_BOOTCOMMAND
+    "${S}/scripts/config" --file "${B}/.config" --enable  USE_BOOTCOMMAND
+    "${S}/scripts/config" --file "${B}/.config" --set-str BOOTCOMMAND "run nkvm_boot"
 
     oe_runmake -C ${S} O=${B} olddefconfig
 }

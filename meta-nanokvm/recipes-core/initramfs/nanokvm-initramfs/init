@@ -4,34 +4,40 @@
 # Boot flow (SD layout: see wic/nanokvm-sd.wks.in):
 #   1. Wait for the SD card (the kernel does not wait for us; this replaces
 #      the old "rootwait" cmdline parameter).
-#   2. First boot only: create the data partition (p4) from all space after
-#      the rootfs slots and format it ext4. This replaces the old S01fs
-#      parted/resize dance, which had to reshape the disk from a rootfs that
-#      was itself on it.
-#   3. Pick a rootfs slot: /slot on the FAT boot partition names "a" (p2) or
-#      "b" (p3). A slot that fails to mount falls back to the other, so a
-#      half-written image update can never brick the BMC.
+#   2. (nothing -- see below). Creating/growing the data partition used to
+#      happen here; it moved to userspace (nanokvm-growdata) so that no
+#      partition-table write ever happens on the boot path.
+#   3. Pick a rootfs slot from nanokvm.slot=<a|b> on the kernel cmdline, which
+#      U-Boot sets from the same bootslot variable that chose the FIT. A slot
+#      that fails to mount falls back to the other, so a half-written image
+#      update can never brick the BMC.
 #   4. Mount the slot's squashfs read-only, lay a tmpfs overlay upper over it
 #      (VOLATILE by design: the root is byte-identical to the image on every
 #      boot; anything that must survive lives on the data partition), and
 #      mount the data partition at /var/lib/nanokvm inside the new root.
 #   5. switch_root into it.
 #
-# Persistence contract (everything else is volatile):
-#   /var/lib/nanokvm         ext4 data partition (p4), mounted here
+# Persistence contract. There are exactly two writable zones: the volatile
+# tmpfs overlay above (discarded every boot, so the read-only base can never
+# drift) and the userdata partition below (the only thing that survives).
+# Anything in the rootfs needing persistence is a SYMLINK into here.
+#   /var/lib/nanokvm         ext4 userdata partition (p4), mounted here
 #     app/, app.prev/        server self-update install dirs (init script
 #                            falls back app -> app.prev -> baked-in /kvmapp)
-#     config/                bind-mounted over /etc/kvm (fstab)
+#     config/                /etc/kvm is a symlink to this
 #     ssh/                   SSH host key + authorized_keys (the app is the
 #                            SSH server; no sshd in the image)
-#     firmware/, media/,     BMC state the server reads/writes (Pi boot
-#     efivars/, ubootenv/,   image, ISO media, EFI/U-Boot env mirrors,
-#     cache/, log/           update staging, host serial-console capture)
+#     firmware/, media/,     BMC state the server reads/writes: host firmware
+#     efivars/, ubootenv/,   capsules staged for the mass-storage gadget, ISO
+#     cache/, log/           media, EFI/U-Boot env mirrors, update staging,
+#                            host serial-console capture. The BMC no longer
+#                            stores a host boot image to serve -- host
+#                            firmware is updated with FMP capsules -- so this
+#                            partition ships EMPTY from the factory.
 
 PATH=/sbin:/usr/sbin:/bin:/usr/bin
 DISK=/dev/mmcblk0
 DATA_PART=${DISK}p4
-DATA_LABEL=nkvm-data
 
 msg() { echo "initramfs: $*"; }
 
@@ -65,49 +71,32 @@ while [ ! -b ${DISK}p2 ]; do
     sleep 1
 done
 
-# --- 2. first boot: grow the data partition to fill the card ---------------
-# The flashed image ships p4 pre-populated (factory Pi boot image inside; see
-# wic/nanokvm-sd.wks.in) at its minimum size. Grow the partition entry here,
-# before anything is mounted: BLKRRPART (kernel partition-table re-read)
-# fails with EBUSY once any partition on the disk is mounted. The filesystem
-# itself is grown online after the mount in step 4, so a power cut between
-# the two steps self-heals on the next boot.
-if [ -b ${DATA_PART} ]; then
-    disk=$(cat /sys/block/${DISK##*/}/size)
-    p4s=$(cat /sys/block/${DISK##*/}/${DATA_PART##*/}/start)
-    p4z=$(cat /sys/block/${DISK##*/}/${DATA_PART##*/}/size)
-    # More than 8 MiB (16384 sectors) of unclaimed tail = not yet grown.
-    if [ $((disk - p4s - p4z)) -gt 16384 ]; then
-        msg "first boot: growing ${DATA_PART} to fill the card"
-        echo ', +' | sfdisk --quiet -N 4 ${DISK} || msg "sfdisk grow failed"
-    fi
-else
-    # A card without p4 (wiped table, or an image predating the pre-populated
-    # layout): recreate it empty from all remaining space. The server notices
-    # the missing boot image and rebuilds it (seed, else download).
-    msg "no data partition: creating ${DATA_PART}"
-    echo ',,83' | sfdisk --append --quiet ${DISK} || msg "sfdisk failed"
-    tries=0
-    while [ ! -b ${DATA_PART} ] && [ $tries -lt 10 ]; do
-        tries=$((tries + 1))
-        sleep 1
-    done
-    if [ -b ${DATA_PART} ]; then
-        mke2fs -t ext4 -q -F -L ${DATA_LABEL} ${DATA_PART} \
-            || msg "mke2fs ${DATA_PART} failed"
-    else
-        msg "data partition did not appear; continuing without persistence"
-    fi
-fi
+# --- 2. (nothing) ----------------------------------------------------------
+# Growing/creating the data partition used to happen here. It does not any
+# more: rewriting the partition table of the disk we are booting from is the
+# single operation most able to make the card unbootable, and doing it on the
+# boot path meant every first boot -- and every power cut during one -- put the
+# MBR at risk. It now runs from userspace once the system is up
+# (nanokvm-growdata), where a failure costs a retry instead of a brick.
+#
+# The consequence here: if p4 is missing or unmountable we simply fall back to
+# tmpfs (step 4 already did), and the next boot has it.
 
 # --- 3. slot selection -----------------------------------------------------
+# The slot arrives on the kernel command line as nanokvm.slot=<a|b>, put there
+# by U-Boot from its own bootslot variable. It used to be read from a "slot"
+# file on the FAT boot partition, which meant (a) mounting a filesystem here
+# just to read one byte, and (b) something, somewhere, writing to the boot
+# partition to change it. Now the same variable that picked the FIT picks the
+# rootfs, so the two halves of a slot cannot disagree, and nothing on the boot
+# path is writable.
 SLOT=a
-mkdir -p /tmp/boot
-if mount -t vfat -o ro ${DISK}p1 /tmp/boot 2>/dev/null; then
-    s=$(tr -d ' \r\n' < /tmp/boot/slot 2>/dev/null)
-    [ "$s" = "b" ] && SLOT=b
-    umount /tmp/boot
-fi
+for arg in $(cat /proc/cmdline 2>/dev/null); do
+    case "$arg" in
+        nanokvm.slot=b) SLOT=b ;;
+        nanokvm.slot=a) SLOT=a ;;
+    esac
+done
 if [ "$SLOT" = "b" ]; then
     TRY="${DISK}p3 ${DISK}p2"
 else
@@ -135,8 +124,9 @@ mount -t overlay \
     -o "lowerdir=/mnt/ro,upperdir=/mnt/rw/upper,workdir=/mnt/rw/work" \
     overlay /mnt/root || rescue "overlay mount failed"
 
-# Data partition: fsck, mount inside the new root, ensure the skeleton the
-# fstab binds and the server expect. If it is damaged beyond -y repair, boot
+# Userdata partition: fsck, mount inside the new root, create the skeleton the
+# rootfs symlinks and the server expect. It ships empty, so this is what makes
+# a freshly flashed card usable. If it is damaged beyond -y repair, boot
 # anyway with a tmpfs there so the BMC stays reachable for recovery.
 mkdir -p /mnt/root/var/lib/nanokvm
 if [ -b ${DATA_PART} ]; then

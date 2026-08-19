@@ -6,14 +6,22 @@ inherit core-image
 # --- Root filesystem: squashfs + volatile overlay -------------------------
 # The root is an immutable squashfs-zst image in an A/B slot pair (p2/p3);
 # the initramfs (nanokvm-initramfs-image) lays a volatile tmpfs overlay over
-# it and mounts the ext4 data partition (created on first boot from the rest
-# of the card) at /var/lib/nanokvm. Everything that must survive a reboot
-# lives there — see the initramfs /init for the persistence contract. A hard
-# power cut can therefore never corrupt the root: every boot starts from the
-# exact image bytes.
+# it and mounts the ext4 data partition at /var/lib/nanokvm. Everything that
+# must survive a reboot lives there — see the initramfs /init for the
+# persistence contract. A hard power cut can therefore never corrupt the root:
+# every boot starts from the exact image bytes.
+#
+# The same holds for the boot payload now: /boot is mounted read-only, the FIT
+# is hash-verified, and the only writable boot state is U-Boot's raw redundant
+# environment. The whole startup path is effectively ephemeral, with the
+# writable overlay attached only once the kernel is up.
 IMAGE_FSTYPES += "squashfs-zst"
 IMAGE_TYPEDEP:wic = "squashfs-zst"
 WKS_FILE = "nanokvm-sd.wks.in"
+
+# wic consumes boot_a.itb/boot_b.itb (IMAGE_BOOT_FILES) and uboot-env.bin (the
+# raw env partition), so both producers must have deployed before do_image_wic.
+do_image_wic[depends] += "nanokvm-boot-fit:do_deploy nanokvm-uboot-env:do_deploy"
 
 # Use the plain packagegroup-base (not -extended): -extended unconditionally
 # RDEPENDS packagegroup-base-wifi -> wireless-regdb-static and would drag in
@@ -124,6 +132,16 @@ IMAGE_INSTALL:append = " \
 # Intentionally none. The SDIO1 pads are repurposed as I2C1 for the I2C slave
 # EEPROM, and CONFIG_WLAN / CONFIG_WIRELESS / CONFIG_BT are off in nanokvm.cfg.
 
+# --- Boot health / A/B -----------------------------------------------------
+# nanokvm-bootok ends an update's probation once the slot has proven it boots
+# (and, by clearing upgrade_available, keeps healthy boots from writing to the
+# environment at all); nanokvm-growdata does the partition growth that used to
+# run in the initramfs. It pulls in fw_setenv, which is also what an update
+# flow uses to flip bootslot.
+IMAGE_INSTALL:append = " \
+    nanokvm-boot-health \
+    "
+
 # --- VPN / firewall ---
 # nftables only; the legacy iptables front-end and ppp are dropped. The kernel
 # carries NF_TABLES/NF_NAT/NFT_NAT and WIREGUARD.
@@ -226,19 +244,19 @@ IMAGE_INSTALL:append = " \
     kernel-module-videobuf2-vmalloc \
     "
 
-# --- Raspberry Pi boot image (served to the managed Pi via the USB gadget) ---
-# rpi-firmware-seed stages the aarch64 U-Boot image built by the "rpi"
-# multiconfig (the vendored meta-raspberrypi layer) into
-# DEPLOY_DIR_IMAGE/nkvm-data-root, which wic packs into the data partition
-# (p4) as its factory content -- see wic/nanokvm-sd.wks.in. Nothing ships in
-# the rootfs and nothing is copied or decompressed at runtime: a flashed card
-# already holds /var/lib/nanokvm/firmware/uboot-rpi.img, and the server
-# (Firmware.SeedPath fallback, then download) only rebuilds it if the data
-# partition is ever lost. The do_image_wic dependency below is what pulls the
-# whole rpi multiconfig into a `kas build kas.yml` -- the aarch64
-# TF-A/U-Boot/RPi-overlay build and the crane-based talos-dtbs fetch run as a
-# side effect of building this image.
-do_image_wic[depends] += "rpi-firmware-seed:do_deploy"
+# --- No host firmware image ------------------------------------------------
+# The BMC used to carry a Raspberry Pi boot image on the data partition and
+# serve it to the managed host over the USB mass-storage gadget, staged at
+# build time by rpi-firmware-seed from a second "rpi" multiconfig. All of that
+# is gone -- the layer, the multiconfig, the seed recipe and the pre-populated
+# partition. Host firmware is updated with UEFI FMP capsules instead, which
+# the host's own EDK2 picks up from \EFI\UpdateCapsule\ on the mass-storage
+# gadget, so the BMC has no reason to hold a boot image at all.
+#
+# The consequences worth noting: the data partition now ships EMPTY (no
+# build-time image surgery, no 500 MB of factory content in the .wic), and a
+# `kas build` no longer drags an entire aarch64 TF-A/U-Boot/RPi-firmware
+# toolchain and a crane-based DTB fetch along behind it.
 
 # --- SD card image via WKS ---
 # (No IMAGE_ROOTFS_SIZE: squashfs is content-sized; the wks pins the slot
@@ -247,14 +265,16 @@ do_image_wic[depends] += "fsbl:do_deploy linux-sophgo:do_deploy nanokvm-initramf
 
 # --- Boot-partition config files ---
 # nanokvm-gadget deploys these to DEPLOY_DIR_IMAGE; wic's bootimg-partition puts
-# them on the FAT boot partition next to fip.bin, the kernel Image and the DTB.
-# Read at runtime from /boot by the NanoKVM server (server/service/usbgadget
-# owns the gadget now; usb.ecm0 seeds the default ECM function on first boot).
-# extlinux.conf is the mainline U-Boot boot menu (bootmeth_extlinux scans
-# /extlinux/extlinux.conf); it loads the initramfs (INITRD) built by
-# nanokvm-initramfs-image. "slot" selects the active rootfs slot ("a" = p2).
-IMAGE_BOOT_FILES:append = " board hostname.prefix ver usb.ecm0 slot extlinux.conf;extlinux/extlinux.conf"
-IMAGE_BOOT_FILES:append = " nanokvm-initramfs-image-${MACHINE}.cpio.gz;initramfs"
+# them on the FAT boot partition next to fip.bin and the A/B FIT payloads. Read
+# at runtime from the read-only /boot mount by the NanoKVM server
+# (server/service/usbgadget owns the gadget now; usb.ecm0 seeds the default ECM
+# function on first boot).
+#
+# Gone from this list: "extlinux.conf" (the boot menu -- the payload is a single
+# FIT now, loaded straight from the U-Boot env), "slot" (the rootfs selector --
+# it lives in the U-Boot environment so nothing has to write to the boot
+# partition to change it) and the standalone initramfs (packed into the FIT).
+IMAGE_BOOT_FILES:append = " board hostname.prefix ver usb.ecm0"
 do_image_wic[depends] += "nanokvm-gadget:do_deploy"
 
 # --- Publish under the original LicheeRV-Nano-Build image name ---

@@ -1,0 +1,86 @@
+/*
+ * FIT source for the NanoKVM boot payload (boot_<slot>.itb).
+ *
+ * One file holding kernel + FDT + initramfs, replacing extlinux's four
+ * separate reads (extlinux.conf, Image, initramfs, dtb). Two properties
+ * matter on this board:
+ *
+ *   - One read instead of four. U-Boot's cv1800b_sdhci reads are marginal on
+ *     this hardware (see the sdhci speed-cap patch); every file it has to find
+ *     and read is another chance to hit "No partition table" / "Error reading
+ *     cluster". A FIT is one fatload.
+ *
+ *   - Every sub-image carries a hash. A corrupt read is DETECTED and bootm
+ *     refuses, instead of handing the hardware a silently damaged kernel. That
+ *     turns a mystery hang into a clean failure the A/B fallback can act on.
+ *
+ * Load addresses (DRAM base 0x80000000, 256 MiB, ION carveout at 0x89500000
+ * caps everything via bootm_size=0x9500000):
+ *
+ *   kernel   0x80200000  run address, booti's usual destination
+ *   fdt      0x82000000  = fdt_addr_r
+ *   ramdisk  0x84000000  = ramdisk_addr_r
+ *
+ * The FIT itself is staged at kernel_addr_r=0x83000000 (u-boot patch 0009),
+ * above the kernel's run region so extraction cannot overwrite the staged
+ * image -- the failure that killed the previous FIT attempt.
+ */
+
+/dts-v1/;
+
+/ {
+	description = "NanoKVM SG2002 boot payload (kernel + FDT + initramfs)";
+	#address-cells = <2>;
+
+	images {
+		kernel {
+			description = "Linux kernel";
+			data = /incbin/("@KERNEL@");
+			type = "kernel";
+			arch = "riscv";
+			os = "linux";
+			compression = "none";
+			load = <0x0 0x80200000>;
+			entry = <0x0 0x80200000>;
+			hash {
+				algo = "sha256";
+			};
+		};
+
+		fdt {
+			description = "Device tree";
+			data = /incbin/("@DTB@");
+			type = "flat_dt";
+			arch = "riscv";
+			compression = "none";
+			load = <0x0 0x82000000>;
+			hash {
+				algo = "sha256";
+			};
+		};
+
+		ramdisk {
+			description = "NanoKVM initramfs";
+			data = /incbin/("@INITRAMFS@");
+			type = "ramdisk";
+			arch = "riscv";
+			os = "linux";
+			compression = "gzip";
+			load = <0x0 0x84000000>;
+			hash {
+				algo = "sha256";
+			};
+		};
+	};
+
+	configurations {
+		default = "conf";
+
+		conf {
+			description = "NanoKVM boot";
+			kernel = "kernel";
+			fdt = "fdt";
+			ramdisk = "ramdisk";
+		};
+	};
+};

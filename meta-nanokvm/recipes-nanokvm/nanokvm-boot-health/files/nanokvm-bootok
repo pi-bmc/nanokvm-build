@@ -1,0 +1,27 @@
+#!/bin/sh
+# Confirm the current A/B slot booted successfully.
+#
+# U-Boot's BOOTCOUNT_LIMIT counts attempts and, once bootlimit is exceeded,
+# runs altbootcmd -- which swaps to the other slot. That counter only persists
+# while upgrade_available is set, so this is the piece that closes the loop:
+# once the system is up far enough to run this, the slot has proven itself and
+# the probation ends.
+#
+# Clearing upgrade_available is also what keeps normal boots WRITE-FREE: with
+# it at 0, U-Boot's bootcount_store() does nothing at all, so the environment
+# sectors are never touched on a healthy boot.
+set -e
+
+command -v fw_setenv >/dev/null 2>&1 || exit 0
+[ -r /etc/fw_env.config ] || exit 0
+
+state=$(fw_printenv -n upgrade_available 2>/dev/null || echo 0)
+[ "$state" = "0" ] && exit 0
+
+slot=$(fw_printenv -n bootslot 2>/dev/null || echo '?')
+echo "nanokvm-bootok: slot $slot booted; ending update probation"
+# One write, both variables, so a crash between them is impossible.
+fw_setenv --script /dev/stdin <<'ENVEOF'
+upgrade_available 0
+bootcount 0
+ENVEOF

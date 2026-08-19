@@ -5,8 +5,17 @@
 # both mounts must be present before the server runs (inittab ::respawn
 # entries start only after the ::sysinit `mount -a` completes):
 #
-#   /boot               the server reads /boot/ver and, on first boot only,
-#                       the legacy migration flags /boot/usb.ecm0, usb.vid, ...
+#   /boot               READ-ONLY. The server only ever reads from it
+#                       (/boot/ver and, on first boot only, the legacy
+#                       migration flags /boot/usb.ecm0, usb.vid, ...), and the
+#                       boot payload itself must survive a crash: FAT16 has no
+#                       journal, so a dirty unmount of a writable /boot is a
+#                       direct route to an unbootable card. The A/B slot that
+#                       used to be a file here now lives in the U-Boot
+#                       environment (raw, redundant, atomic). Anything that
+#                       genuinely needs to write the boot partition -- an image
+#                       update writing a new FIT -- must remount it rw
+#                       explicitly, do its work, and remount ro.
 #   /sys/kernel/config  the gadget is assembled under configfs/usb_gadget
 #                       (the server mounts configfs itself as a fallback, but
 #                       having it in fstab brings it up once, early)
@@ -21,21 +30,35 @@
 # base-files owns /etc/fstab, so append here rather than shipping a second
 # /etc/fstab from nanokvm-gadget (which would be an ipk file conflict).
 #
-# /var/lib/nanokvm (the ext4 data partition, p4) is intentionally absent: the
-# initramfs creates it on first boot and mounts it before switch_root, so by
-# the time mountall runs it is already up. Only the bind of the app's config
-# dir lives here — with the volatile tmpfs overlay over the squashfs root,
-# anything written to a plain /etc/kvm would vanish on reboot; the bind makes
-# it land on the data partition instead. /etc/kvm itself must exist in the
-# image (bind targets are not auto-created by mount).
+# /var/lib/nanokvm (the ext4 userdata partition, p4) is intentionally absent
+# from fstab: the initramfs mounts it before switch_root, so by the time
+# mountall runs it is already up.
+#
+# There are exactly two writable zones on this system:
+#
+#   1. the volatile tmpfs overlay over the squashfs root -- writable so the
+#      running system can override files, but discarded on every boot, so the
+#      base can never be compromised by accumulated drift; and
+#   2. /var/lib/nanokvm, the userdata partition -- the only thing that
+#      survives a reboot.
+#
+# Everything in the rootfs that needs persistence therefore reaches it by
+# SYMLINK into /var/lib/nanokvm, not by bind mount. /etc/kvm used to be a bind
+# mount here; a symlink does the same job without depending on mount ordering,
+# without a second mount to fail, and it is visible for what it is when you
+# ls the directory. Dangling until the partition mounts is fine -- nothing
+# reads these paths before the initramfs has mounted it.
 do_install:append:sg2002-licheervnano() {
-    install -d ${D}${sysconfdir}/kvm
+    # Persistence symlinks: rootfs path -> userdata partition.
+    install -d ${D}${localstatedir}/lib
+    ln -sfn ${localstatedir}/lib/nanokvm/config ${D}${sysconfdir}/kvm
+
     cat >> ${D}${sysconfdir}/fstab <<'EOF'
 
 # --- NanoKVM ---
-/dev/mmcblk0p1          /boot                vfat   defaults,noatime  0  2
+# /boot is READ-ONLY: nothing writes to the boot partition (see above).
+/dev/mmcblk0p1          /boot                vfat   ro,noatime        0  2
 configfs                /sys/kernel/config   configfs  defaults       0  0
 debugfs                 /sys/kernel/debug    debugfs   defaults       0  0
-/var/lib/nanokvm/config /etc/kvm             none   bind              0  0
 EOF
 }

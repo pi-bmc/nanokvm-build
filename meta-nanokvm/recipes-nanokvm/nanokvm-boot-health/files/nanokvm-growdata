@@ -1,0 +1,52 @@
+#!/bin/sh
+# Grow the data partition (p4) to fill the card, once, from userspace.
+#
+# This used to run in the initramfs. It does not any more: it rewrites the MBR
+# of the disk the board boots from, and doing that on the boot path meant every
+# first boot risked the one structure U-Boot must be able to read. Here a
+# failure is just a failure -- the system is already up, the next boot retries.
+#
+# Idempotent: it does nothing once the tail is claimed, so it is safe to run on
+# every boot.
+set -e
+
+DISK=/dev/mmcblk0
+PART=${DISK}p4
+DEV=${DISK##*/}
+# Leave up to 8 MiB of slack unclaimed before deciding a grow is needed.
+SLACK=16384
+
+log() { echo "nanokvm-growdata: $*"; }
+
+[ -b "$DISK" ] || { log "no $DISK, nothing to do"; exit 0; }
+
+if [ ! -b "$PART" ]; then
+    log "no $PART; creating it from the remaining space"
+    echo ',,83' | sfdisk --append --quiet "$DISK" || { log "sfdisk failed"; exit 0; }
+    partprobe "$DISK" 2>/dev/null || true
+    tries=0
+    while [ ! -b "$PART" ] && [ $tries -lt 10 ]; do
+        tries=$((tries + 1)); sleep 1
+    done
+    [ -b "$PART" ] || { log "partition did not appear"; exit 0; }
+    mke2fs -t ext4 -q -F -L nkvm-data "$PART" || log "mke2fs failed"
+    exit 0
+fi
+
+disksz=$(cat /sys/block/$DEV/size)
+start=$(cat /sys/block/$DEV/${PART##*/}/start)
+size=$(cat /sys/block/$DEV/${PART##*/}/size)
+tail=$((disksz - start - size))
+
+if [ "$tail" -le "$SLACK" ]; then
+    exit 0
+fi
+
+log "growing $PART to fill the card ($tail sectors unclaimed)"
+# The partition entry can be grown while mounted; the kernel refuses to re-read
+# the table (EBUSY), so resize2fs online-grows what it can see after
+# BLKPG-style update. If the entry grew but the fs did not, the next run of
+# this script (next boot) finishes the job -- hence the ordering.
+echo ', +' | sfdisk --quiet -N 4 --force "$DISK" || { log "sfdisk grow failed"; exit 0; }
+partx -u "$PART" 2>/dev/null || partprobe "$DISK" 2>/dev/null || true
+resize2fs "$PART" >/dev/null 2>&1 || log "resize2fs deferred to next boot"

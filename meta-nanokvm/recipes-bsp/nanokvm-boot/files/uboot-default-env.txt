@@ -1,0 +1,19 @@
+# Pre-seeded U-Boot environment, written into the raw sectors between the MBR
+# and p1 (see the wks). Without this a freshly flashed card comes up with "bad
+# CRC, using default environment": harmless, but it means the A/B state only
+# becomes real after the first saveenv. Seeding it makes a flash deterministic:
+# every card starts on slot a with a valid environment.
+#
+# Keep in sync with u-boot patch 0009 (the compiled-in defaults). These values
+# win over the compiled ones because a valid stored env replaces them wholesale.
+bootslot=a
+bootlimit=3
+bootcount=0
+upgrade_available=0
+nkvm_args=console=ttyS0,115200 earlycon=sbi net.ifnames=0 loglevel=0
+nkvm_load=fatload mmc 0:1 ${kernel_addr_r} boot_${bootslot}.itb
+nkvm_try=setenv bootargs ${nkvm_args} nanokvm.slot=${bootslot}; run nkvm_load && bootm ${kernel_addr_r}
+nkvm_swap=if test ${bootslot} = a; then setenv bootslot b; else setenv bootslot a; fi; setenv bootcount 0; saveenv
+nkvm_boot=run nkvm_try; echo NanoKVM: slot ${bootslot} did not boot, switching; run nkvm_swap; run nkvm_try
+altbootcmd=run nkvm_swap; run nkvm_boot
+bootcmd=run nkvm_boot
