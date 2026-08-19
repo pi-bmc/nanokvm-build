@@ -1,0 +1,189 @@
+#!/bin/sh
+# Install a NanoKVM system image into the inactive A/B slot.
+#
+#   nanokvm-update [--reboot] [--no-verify] <bundle.tar[.gz]>
+#
+# A bundle is a plain tar holding two members at its root:
+#
+#   rootfs.squashfs   the new root filesystem, written to the inactive slot's
+#                     rootfs partition (p2 for slot a, p3 for slot b)
+#   boot.itb          the matching FIT (kernel + DTB + initramfs), written to
+#                     the boot partition as boot_<slot>.itb
+#
+# and optionally sha256sums, in `sha256sum` format, covering both.
+#
+# The two halves must be installed together: the FIT carries the initramfs that
+# mounts the squashfs, and the slot name selects both. Everything is written to
+# the INACTIVE slot, so the running system is never touched and a failure at
+# any point before the last step leaves a fully working board.
+#
+# The commit is a single environment write. Until it happens the new slot is
+# inert; after it, U-Boot has BOOTMETH_RAUC_DEFAULT_TRIES attempts to reach a
+# userspace that runs nanokvm-bootok, and falls back on its own if it cannot.
+set -e
+
+DISK=/dev/mmcblk0
+BOOT_MNT=/boot
+STAGE=/var/lib/nanokvm/cache/update
+TRIES=3                             # CONFIG_BOOTMETH_RAUC_DEFAULT_TRIES
+BREADCRUMB=/mnt/initramfs/rw/bootslot
+
+REBOOT=0
+VERIFY=1
+BUNDLE=
+
+log()  { echo "nanokvm-update: $*"; }
+die()  { echo "nanokvm-update: error: $*" >&2; exit 1; }
+
+usage() {
+    echo "usage: nanokvm-update [--reboot] [--no-verify] <bundle.tar[.gz]>" >&2
+    exit 2
+}
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --reboot)     REBOOT=1 ;;
+        --no-verify)  VERIFY=0 ;;
+        -h|--help)    usage ;;
+        -*)           die "unknown option $1" ;;
+        *)            [ -z "$BUNDLE" ] || die "one bundle at a time"; BUNDLE=$1 ;;
+    esac
+    shift
+done
+[ -n "$BUNDLE" ] || usage
+[ -f "$BUNDLE" ] || die "no such bundle: $BUNDLE"
+[ -r /etc/fw_env.config ] || die "/etc/fw_env.config missing; cannot reach the boot environment"
+command -v fw_setenv >/dev/null 2>&1 || die "fw_setenv not installed"
+
+# --- which slot are we running, and which one may we write? ----------------
+# The breadcrumb is the slot the initramfs actually mounted, which is not
+# always the slot U-Boot asked for. Using the environment's idea of the active
+# slot instead would, after a fallback, name the running rootfs as the target.
+running=$(cat "$BREADCRUMB" 2>/dev/null || true)
+if [ -z "$running" ]; then
+    for arg in $(cat /proc/cmdline 2>/dev/null); do
+        case "$arg" in rauc.slot=*) running=${arg#rauc.slot=} ;; esac
+    done
+fi
+case "$running" in
+    a|b) ;;
+    *)   die "cannot tell which slot is running (breadcrumb '$running'); refusing to write either" ;;
+esac
+
+if [ "$running" = "a" ]; then
+    target=b; target_part=${DISK}p3
+else
+    target=a; target_part=${DISK}p2
+fi
+log "running slot $running; installing into slot $target ($target_part)"
+
+[ -b "$target_part" ] || die "$target_part is not a block device"
+grep -q " ${target_part} " /proc/mounts && die "$target_part is mounted; refusing to write it"
+
+# --- unpack ----------------------------------------------------------------
+rm -rf "$STAGE"
+mkdir -p "$STAGE"
+trap 'rm -rf "$STAGE"' EXIT INT TERM
+
+log "unpacking $BUNDLE"
+# No .xz: the image ships busybox tar and gzip but no xz, and the payload is a
+# zstd squashfs already -- an outer xz would buy almost nothing for the ~100 KB
+# the decompressor costs in a 26 MB rootfs.
+case "$BUNDLE" in
+    *.tar.gz|*.tgz) tar -xzf "$BUNDLE" -C "$STAGE" ;;
+    *.tar)          tar -xf  "$BUNDLE" -C "$STAGE" ;;
+    *)              die "unsupported bundle format (expected .tar or .tar.gz)" ;;
+esac
+
+for f in rootfs.squashfs boot.itb; do
+    [ -f "$STAGE/$f" ] || die "bundle has no $f"
+done
+
+if [ -f "$STAGE/sha256sums" ]; then
+    log "checking bundle checksums"
+    ( cd "$STAGE" && sha256sum -c sha256sums >/dev/null ) \
+        || die "bundle checksums do not match"
+elif [ "$VERIFY" = "1" ]; then
+    log "note: bundle carries no sha256sums; relying on write-back verification"
+fi
+
+# --- sanity-check the payloads before touching the card --------------------
+# squashfs little-endian magic "hsqs", FIT is a flattened device tree
+# (0xd00dfeed). Cheap, and it catches a bundle assembled the wrong way round
+# before anything is overwritten.
+[ "$(dd if="$STAGE/rootfs.squashfs" bs=4 count=1 2>/dev/null | od -An -tx1 | tr -d ' \n')" = "68737173" ] \
+    || die "rootfs.squashfs is not a squashfs image"
+[ "$(dd if="$STAGE/boot.itb" bs=4 count=1 2>/dev/null | od -An -tx1 | tr -d ' \n')" = "d00dfeed" ] \
+    || die "boot.itb is not a FIT"
+
+rootfs_sz=$(stat -c %s "$STAGE/rootfs.squashfs")
+part_sz=$(( $(cat /sys/block/${DISK##*/}/${target_part##*/}/size) * 512 ))
+[ "$rootfs_sz" -le "$part_sz" ] \
+    || die "rootfs.squashfs is $rootfs_sz B, larger than $target_part ($part_sz B)"
+
+boot_free=$(df -k "$BOOT_MNT" 2>/dev/null | awk 'NR==2 {print $4 * 1024}')
+itb_sz=$(stat -c %s "$STAGE/boot.itb")
+# The slot's own itb is about to be replaced, so its current size is free too.
+old_itb=$( [ -f "$BOOT_MNT/boot_${target}.itb" ] && stat -c %s "$BOOT_MNT/boot_${target}.itb" || echo 0 )
+[ -z "$boot_free" ] || [ $(( boot_free + old_itb )) -ge "$itb_sz" ] \
+    || die "boot partition has no room for boot_${target}.itb ($itb_sz B)"
+
+# --- write the rootfs slot -------------------------------------------------
+log "writing rootfs.squashfs to $target_part ($rootfs_sz B)"
+dd if="$STAGE/rootfs.squashfs" of="$target_part" bs=1M conv=fsync 2>/dev/null \
+    || die "writing $target_part failed"
+sync
+
+if [ "$VERIFY" = "1" ]; then
+    log "verifying $target_part"
+    want=$(sha256sum "$STAGE/rootfs.squashfs" | cut -d' ' -f1)
+    # Read back exactly as many bytes as were written; the partition is larger.
+    got=$(dd if="$target_part" bs=1M count=$(( (rootfs_sz + 1048575) / 1048576 )) 2>/dev/null \
+          | head -c "$rootfs_sz" | sha256sum | cut -d' ' -f1)
+    [ "$want" = "$got" ] || die "read-back of $target_part does not match; slot $target NOT activated"
+fi
+
+# --- write the boot payload ------------------------------------------------
+# /boot is mounted read-only precisely so that nothing can corrupt a
+# journal-less FAT by accident. This is the one operation allowed to change
+# that, and it puts it back.
+boot_ro_restore() { mount -o remount,ro "$BOOT_MNT" 2>/dev/null || true; }
+log "writing boot_${target}.itb ($itb_sz B)"
+mount -o remount,rw "$BOOT_MNT" || die "cannot remount $BOOT_MNT read-write"
+trap 'boot_ro_restore; rm -rf "$STAGE"' EXIT INT TERM
+
+# Write to a temporary name and rename, so a power cut cannot leave a
+# half-written boot_<slot>.itb under the name U-Boot will try to boot.
+cp "$STAGE/boot.itb" "$BOOT_MNT/.boot_${target}.new" || die "copy to $BOOT_MNT failed"
+sync
+if [ "$VERIFY" = "1" ]; then
+    want=$(sha256sum "$STAGE/boot.itb" | cut -d' ' -f1)
+    got=$(sha256sum "$BOOT_MNT/.boot_${target}.new" | cut -d' ' -f1)
+    [ "$want" = "$got" ] || { rm -f "$BOOT_MNT/.boot_${target}.new"; sync
+        die "read-back of boot_${target}.itb does not match; slot $target NOT activated"; }
+fi
+mv "$BOOT_MNT/.boot_${target}.new" "$BOOT_MNT/boot_${target}.itb" || die "rename in $BOOT_MNT failed"
+sync
+boot_ro_restore
+trap 'rm -rf "$STAGE"' EXIT INT TERM
+
+# --- commit ----------------------------------------------------------------
+# Everything above is inert until this runs: slot $target is fully written but
+# BOOT_ORDER still names $running first. Give the new slot its full allowance
+# and put it at the head of the order. If it cannot reach a userspace that runs
+# nanokvm-bootok, the counter runs out and U-Boot falls back to $running --
+# which is still exactly the system running right now.
+#
+# Both names come from CONFIG_BOOTMETH_RAUC_BOOT_ORDER, so writing BOOT_ORDER
+# here is safe; a name outside that set would crash U-Boot in get_slot().
+log "activating slot $target"
+fw_setenv "BOOT_${target}_LEFT" "$TRIES"
+fw_setenv BOOT_ORDER "$target $running"
+
+log "slot $target installed and activated; slot $running is the fallback"
+if [ "$REBOOT" = "1" ]; then
+    log "rebooting"
+    reboot
+else
+    log "reboot to run it"
+fi

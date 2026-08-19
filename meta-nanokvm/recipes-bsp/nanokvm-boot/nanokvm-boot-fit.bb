@@ -17,6 +17,7 @@ DEPENDS = "u-boot-mkimage-native dtc-native virtual/kernel nanokvm-initramfs-ima
 do_compile[depends] += "virtual/kernel:do_deploy nanokvm-initramfs-image:do_image_complete"
 
 COMPATIBLE_MACHINE = "sg2002-licheervnano"
+PACKAGE_ARCH = "${MACHINE_ARCH}"
 INHIBIT_DEFAULT_DEPS = "1"
 PACKAGES = ""
 

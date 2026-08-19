@@ -1,59 +1,70 @@
 From: NanoKVM build <nbatkins@gmail.com>
-Subject: [PATCH] licheerv-nano: A/B boot env and FIT staging address
+Subject: [PATCH] licheerv-nano: stage the boot FIT clear of the kernel run region
 
 The NanoKVM image boots a single FIT (boot_<slot>.itb: kernel + FDT +
-initramfs) selected by an A/B slot variable, instead of extlinux loading
-four separate files. Two changes are needed in the board env:
+initramfs) rather than four separate files, so kernel_addr_r stops being a
+place the kernel lands and becomes the place the whole FIT is staged before
+bootm extracts from it. At the stock 0x81000000 the kernel's own run region
+(0x80200000 upwards) grows into the staged image and bootm aborts with "new
+format image overwritten - must RESET the board to recover".
 
-1. kernel_addr_r moves 0x81000000 -> 0x83000000. It is now the *staging*
-   address for the whole FIT, and the FIT's kernel sub-image is extracted
-   down to its 0x80200000 run address. At 0x81000000 the kernel's run
-   region would grow into the staged FIT and bootm would abort with "new
-   format image overwritten - must RESET the board to recover" -- the exact
-   failure that killed the first FIT attempt, when the kernel was ~28 MiB.
-   Staging above the run region removes the coupling: the kernel is bounded
-   by fdt_addr_r=0x82000000 (30 MiB) instead of by the staging address, and
-   the linux-sophgo bbappend asserts that budget.
+Move it to 0x83000000, above the run region and below ramdisk_addr_r. That
+leaves a 16 MiB staging window, which nanokvm-boot-fit asserts the FIT fits
+into, and it decouples the two budgets: the kernel is bounded by
+fdt_addr_r=0x82000000 rather than by wherever the FIT happens to be staged.
 
-2. The A/B variables themselves (NKVM_AB_ENV).
+Also pin two environment defaults that the boot flow depends on:
 
-Everything stays below bootm_size=0x9500000, i.e. under the ION carveout at
-0x89500000 (see the ramdisk-addr patch).
+  verify=yes, so FIT hash checking does not rest on env_get_yesno()
+  returning -1 for an unset variable and -1 happening to be truthy.
+
+  bootmeths=rauc, so the bootstd scan only ever offers the RAUC bootmeth.
+  bootmeth_extlinux, _efiloader and _script stay compiled in -- they are
+  worth having at the prompt when rescuing a board by hand -- but left in
+  the scan order bootmeth_script would find the very same boot.scr on p1
+  and source it with none of the slot variables set. Setting this in the
+  compiled defaults rather than only in the stored environment means even
+  a card with a blank or corrupt env scans in the right order.
+
+Slot selection itself is not here. It was, briefly -- a hand-written nkvm_*
+env script implementing try/swap/bootcount. Upstream's bootmeth_rauc owns
+that now (BOOT_ORDER + BOOT_<slot>_LEFT, enabled from the u-boot recipe), so
+the board header carries only the address plan.
 
 Upstream-Status: Inappropriate [NanoKVM boot-flow specific]
 ---
 --- a/include/configs/licheerv_nano.h
 +++ b/include/configs/licheerv_nano.h
-@@ -14,13 +14,40 @@
+@@ -14,13 +14,41 @@
  
  #define CFG_SYS_SDRAM_BASE         0x80000000
  
 +/*
-+ * NanoKVM A/B boot.
++ * kernel_addr_r is the *staging* address for the whole boot FIT
++ * (boot_<slot>.itb: kernel + FDT + initramfs), not the kernel's run address.
++ * bootm extracts the kernel sub-image down to 0x80200000, so staging has to
++ * sit clear of the region the kernel is about to occupy. At the stock
++ * 0x81000000 it does not, and bootm aborts with "new format image overwritten
++ * - must RESET the board to recover".
 + *
-+ * bootslot names the active slot ("a"|"b"); it selects both the boot payload
-+ * (boot_a.itb / boot_b.itb on the FAT boot partition) and, via the
-+ * nanokvm.slot= cmdline the initramfs reads, the rootfs squashfs slot. One
-+ * variable, both halves, so they can never disagree.
++ * 0x83000000 puts the staged image above the run region and below
++ * ramdisk_addr_r, leaving a 16 MiB staging window that nanokvm-boot-fit
++ * asserts the FIT fits into. It also decouples the two: the kernel is now
++ * bounded by fdt_addr_r=0x82000000 rather than by where the FIT is staged.
 + *
-+ * nkvm_boot tries the active slot and, if the load or bootm fails, swaps and
-+ * tries the other one in the same boot. altbootcmd is what BOOTCOUNT_LIMIT
-+ * runs once bootlimit consecutive attempts have failed to reach a healthy
-+ * userspace: it swaps first, so a bad update falls back on its own.
++ * verify=yes pins FIT hash checking on. bootm already verifies by default,
++ * but only because env_get_yesno() returns -1 for an unset variable and -1 is
++ * truthy -- too incidental a mechanism to leave the integrity of the boot
++ * payload resting on.
 + *
-+ * Steady-state boots write NOTHING: bootcount_env only persists the counter
-+ * while upgrade_available is set, which userspace does only around an update.
++ * bootmeths=rauc holds the bootstd scan to the RAUC bootmeth. The others stay
++ * compiled in for hand rescue at the prompt, but in the scan order
++ * bootmeth_script would find the same boot.scr on p1 and source it without
++ * any of the slot variables set.
++ *
++ * Everything stays below bootm_size=0x9500000, i.e. under the ION carveout at
++ * 0x89500000 (see the ramdisk-addr patch).
 + */
-+#define NKVM_AB_ENV \
-+								"bootslot=a\0" \
-+								"bootlimit=3\0" \
-+								"nkvm_args=console=ttyS0,115200 earlycon=sbi net.ifnames=0 loglevel=0\0" \
-+								"nkvm_load=fatload mmc 0:1 ${kernel_addr_r} boot_${bootslot}.itb\0" \
-+								"nkvm_try=setenv bootargs ${nkvm_args} nanokvm.slot=${bootslot}; run nkvm_load && bootm ${kernel_addr_r}\0" \
-+								"nkvm_swap=if test ${bootslot} = a; then setenv bootslot b; else setenv bootslot a; fi; setenv bootcount 0; saveenv\0" \
-+								"nkvm_boot=run nkvm_try; echo NanoKVM: slot ${bootslot} did not boot, switching; run nkvm_swap; run nkvm_try\0" \
-+								"altbootcmd=run nkvm_swap; run nkvm_boot\0"
-+
  #define CFG_EXTRA_ENV_SETTINGS  "consoledev=ttyS0\0" \
  								"baudrate=115200\0" \
  								"bootm_size=0x9500000\0" \
@@ -62,7 +73,8 @@ Upstream-Status: Inappropriate [NanoKVM boot-flow specific]
 +								"kernel_addr_r=0x83000000\0" \
  								"ramdisk_addr_r=0x84000000\0" \
  								"scriptaddr=0x80c00000\0" \
-+								NKVM_AB_ENV \
++								"verify=yes\0" \
++								"bootmeths=rauc\0" \
  								BOOTENV
  
  #endif /* __CONFIG_H */

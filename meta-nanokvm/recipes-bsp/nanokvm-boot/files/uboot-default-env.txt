@@ -1,19 +1,35 @@
-# Pre-seeded U-Boot environment, written into the raw sectors between the MBR
-# and p1 (see the wks). Without this a freshly flashed card comes up with "bad
-# CRC, using default environment": harmless, but it means the A/B state only
-# becomes real after the first saveenv. Seeding it makes a flash deterministic:
-# every card starts on slot a with a valid environment.
+# Overrides layered on top of U-Boot's compiled-in default environment when the
+# pre-seeded environment blob is built (nanokvm-uboot-env.bb).
 #
-# Keep in sync with u-boot patch 0009 (the compiled-in defaults). These values
-# win over the compiled ones because a valid stored env replaces them wholesale.
-bootslot=a
-bootlimit=3
-bootcount=0
-upgrade_available=0
-nkvm_args=console=ttyS0,115200 earlycon=sbi net.ifnames=0 loglevel=0
-nkvm_load=fatload mmc 0:1 ${kernel_addr_r} boot_${bootslot}.itb
-nkvm_try=setenv bootargs ${nkvm_args} nanokvm.slot=${bootslot}; run nkvm_load && bootm ${kernel_addr_r}
-nkvm_swap=if test ${bootslot} = a; then setenv bootslot b; else setenv bootslot a; fi; setenv bootcount 0; saveenv
-nkvm_boot=run nkvm_try; echo NanoKVM: slot ${bootslot} did not boot, switching; run nkvm_swap; run nkvm_try
-altbootcmd=run nkvm_swap; run nkvm_boot
-bootcmd=run nkvm_boot
+# ONLY put things here that are not already compiled in. The blob is generated
+# by concatenating u-boot-initial-env -- the exact default environment the
+# u-boot recipe deploys -- with this file, because a valid stored environment
+# REPLACES the compiled defaults wholesale rather than merging with them
+# (env_import() -> himport_r() destroys the hash table first; ENV_APPEND is
+# off). A hand-written blob that lists only the interesting variables therefore
+# takes kernel_addr_r, bootm_size, fdt_addr_r and the rest away from U-Boot,
+# and the board stops booting.
+#
+# Seeding matters for a second reason: libubootenv loads NO variables when both
+# environment copies fail their CRC (libuboot_load() leaves ctx->valid false),
+# so on an unseeded card the first `fw_setenv BOOT_a_LEFT 3` would write an
+# environment containing only that one variable -- and take the compiled
+# defaults away just as effectively.
+
+# --- RAUC A/B slot state ---------------------------------------------------
+# bootmeth_rauc creates these itself when they are missing, so seeding them is
+# not strictly required -- but it makes the state of a freshly flashed card
+# something the image decided rather than something the first boot invented.
+#
+# BOOT_ORDER is the slot order to try. BOOT_<slot>_LEFT is the number of
+# attempts each slot has left; the bootmeth decrements the active slot's
+# counter before handing off to boot.scr, and nanokvm-bootok resets it once
+# userspace is up. Both slots ship the same payload at factory, so either is a
+# valid place to start.
+#
+# Do NOT let userspace write BOOT_ORDER. distro_rauc's get_slot() walks a
+# NULL-terminated array testing slots[i]->name, so an entry that is not in
+# CONFIG_BOOTMETH_RAUC_BOOT_ORDER dereferences NULL and takes U-Boot down.
+BOOT_ORDER=a b
+BOOT_a_LEFT=3
+BOOT_b_LEFT=3

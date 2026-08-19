@@ -1,27 +1,61 @@
 #!/bin/sh
-# Confirm the current A/B slot booted successfully.
+# Confirm the running A/B slot booted successfully.
 #
-# U-Boot's BOOTCOUNT_LIMIT counts attempts and, once bootlimit is exceeded,
-# runs altbootcmd -- which swaps to the other slot. That counter only persists
-# while upgrade_available is set, so this is the piece that closes the loop:
-# once the system is up far enough to run this, the slot has proven itself and
-# the probation ends.
+# U-Boot's RAUC bootmeth decrements BOOT_<slot>_LEFT and saves the environment
+# before it hands off to boot.scr, on every boot. Nothing puts it back except
+# this script, so without it a perfectly healthy system counts itself down to
+# zero in BOOTMETH_RAUC_DEFAULT_TRIES boots and RAUC starts trying the other
+# slot for no reason. Reaching rcS is the proof the slot works.
 #
-# Clearing upgrade_available is also what keeps normal boots WRITE-FREE: with
-# it at 0, U-Boot's bootcount_store() does nothing at all, so the environment
-# sectors are never touched on a healthy boot.
+# It also reconciles the two halves of a slot. The initramfs falls back to the
+# other rootfs when the selected one will not mount, which leaves the running
+# system on a different slot than the one U-Boot picked. Confirming the slot
+# U-Boot asked for would then mark the broken one good forever.
 set -e
+
+# Must match CONFIG_BOOTMETH_RAUC_DEFAULT_TRIES in the u-boot recipe.
+TRIES=3
+# Written by the initramfs; see /init step 4.
+BREADCRUMB=/mnt/initramfs/rw/bootslot
+
+log() { echo "nanokvm-bootok: $*"; }
 
 command -v fw_setenv >/dev/null 2>&1 || exit 0
 [ -r /etc/fw_env.config ] || exit 0
 
-state=$(fw_printenv -n upgrade_available 2>/dev/null || echo 0)
-[ "$state" = "0" ] && exit 0
+# The slot U-Boot chose, as boot.scr passed it on.
+req=
+for arg in $(cat /proc/cmdline 2>/dev/null); do
+    case "$arg" in
+        rauc.slot=*) req=${arg#rauc.slot=} ;;
+    esac
+done
 
-slot=$(fw_printenv -n bootslot 2>/dev/null || echo '?')
-echo "nanokvm-bootok: slot $slot booted; ending update probation"
-# One write, both variables, so a crash between them is impossible.
-fw_setenv --script /dev/stdin <<'ENVEOF'
-upgrade_available 0
-bootcount 0
-ENVEOF
+# The slot the initramfs actually mounted, which is the one that has proven
+# anything. Fall back to the requested slot if the breadcrumb is missing.
+act=$(cat "$BREADCRUMB" 2>/dev/null || true)
+[ -n "$act" ] || act=$req
+
+case "$act" in
+    a|b) ;;
+    *)   log "no usable slot name (cmdline '$req', breadcrumb '$act'); nothing to confirm"
+         exit 0 ;;
+esac
+
+if [ -n "$req" ] && [ "$req" != "$act" ]; then
+    log "WARNING: U-Boot selected slot $req but the initramfs mounted slot $act"
+    log "confirming $act only -- BOOT_${req}_LEFT is left to decay so RAUC stops choosing it"
+fi
+
+# BOOT_ORDER is deliberately never written from here. distro_rauc's get_slot()
+# walks a NULL-terminated array testing slots[i]->name, so a name that is not
+# in CONFIG_BOOTMETH_RAUC_BOOT_ORDER dereferences NULL and takes U-Boot down.
+# Letting a bad slot's counter run out reaches the same result using RAUC's own
+# mechanism, without ever putting a name in the bootloader's mouth.
+cur=$(fw_printenv -n "BOOT_${act}_LEFT" 2>/dev/null || true)
+if [ "$cur" = "$TRIES" ]; then
+    exit 0
+fi
+
+log "slot $act booted; restoring BOOT_${act}_LEFT to $TRIES (was ${cur:-unset})"
+fw_setenv "BOOT_${act}_LEFT" "$TRIES"

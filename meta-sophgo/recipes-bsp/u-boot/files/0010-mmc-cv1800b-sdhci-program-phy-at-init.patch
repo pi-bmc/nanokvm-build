@@ -1,0 +1,166 @@
+From: NanoKVM build <nbatkins@gmail.com>
+Subject: [PATCH] mmc: cv1800b_sdhci: program the PHY at init, honour max-frequency
+
+Two independent bugs that together made U-Boot's SD reads on this SoC
+unreliable while Linux's were fine on the same card.
+
+1. The PHY was never programmed.
+
+   Linux configures the CV18xx PHY from cv18xx_sdhci_reset(), which the
+   SDHCI core calls at init and on every mode change: MSHC_CTRL gets
+   LATANCY_1T, PHY_CONFIG gets TX_BPS, and PHY_TX_RX_DLY gets both source
+   clocks inverted with zero delay. U-Boot's driver only ever wrote
+   PHY_TX_RX_DLY, and only from platform_execute_tuning() -- which never
+   runs on a 3.3V-only board, because no-1-8-v masks out every UHS mode
+   that would trigger tuning. So on the LicheeRV Nano the delay lines kept
+   whatever the FSBL left, and reads at SD high-speed failed intermittently
+   ("Invalid FAT entry", "Error reading cluster", "No partition table") on
+   media that reads back byte-correct.
+
+   set_control_reg is the hook the core calls on each set_ios before it
+   programs the clock, which is the closest analogue U-Boot has to the
+   kernel's ->reset. Note it deliberately does not chain to the generic
+   sdhci_set_control_reg(): this driver has never installed that op, so the
+   voltage-switch and UHS-timing handling has never run here, and on a
+   no-1-8-v board sdhci_set_voltage() is the very CMD11 path that wedges
+   the card.
+
+2. max-frequency was silently discarded.
+
+   mmc_of_parse() puts the DT property into cfg->f_max, and then
+   sdhci_setup_cfg() overwrites cfg->f_max with host->max_clk whenever its
+   own f_max argument is zero. This driver passed zero, so max-frequency
+   never had any effect and the bus ran at whatever the negotiated mode
+   allowed. Pass the parsed value through.
+
+   This matters beyond tidiness: it is the safety valve. If the PHY setup
+   above ever proves insufficient on some card, capping sdhci0 in the board
+   DTS now actually caps it.
+
+While here, derive the CV18xx register offsets from the DWC vendor-area-1
+pointer at 0xe8 instead of hardcoding 0x240, matching the Linux driver. The
+pointer reads 0x200 on this SoC, so the resulting address is unchanged.
+
+Upstream-Status: Pending [should go to u-boot; not yet submitted]
+---
+--- a/drivers/mmc/cv1800b_sdhci.c
++++ b/drivers/mmc/cv1800b_sdhci.c
+@@ -6,13 +6,82 @@
+ #include <dm.h>
+ #include <mmc.h>
+ #include <sdhci.h>
++#include <linux/bitops.h>
+ #include <linux/delay.h>
+ 
+-#define SDHCI_PHY_TX_RX_DLY  0x240
+ #define MMC_MAX_CLOCK        375000000
+ #define TUNE_MAX_PHCODE      128
+ 
+-#define PHY_TX_SRC_INVERT  BIT(8)
++/*
++ * The Sophgo PHY registers live inside the DWC IP's vendor area 1, whose
++ * offset the controller reports at 0xe8. It reads 0x200 on CV18xx/SG2002, so
++ * PHY_TX_RX_DLY lands at the 0x240 this driver used to hardcode. Reading the
++ * pointer keeps the names and the arithmetic identical to the Linux driver
++ * (drivers/mmc/host/sdhci-of-dwcmshc.c), which is the reference for what these
++ * bits have to be set to.
++ */
++#define DWCMSHC_P_VENDOR_AREA1  0xe8
++#define DWCMSHC_AREA1_MASK      GENMASK(11, 0)
++
++#define CV18XX_MSHC_CTRL        0x00
++#define  CV18XX_LATANCY_1T      BIT(1)
++#define CV18XX_PHY_TX_RX_DLY    0x40
++#define  PHY_TX_SRC_INVERT      BIT(8)
++#define  PHY_RX_SRC_INVERT      BIT(24)
++#define CV18XX_PHY_CONFIG       0x4c
++#define  CV18XX_PHY_TX_BPS      BIT(0)
++
++static int cv1800b_vendor_area1(struct sdhci_host *host)
++{
++	return sdhci_readl(host, DWCMSHC_P_VENDOR_AREA1) & DWCMSHC_AREA1_MASK;
++}
++
++/*
++ * Program the PHY the way the Linux driver's cv18xx_sdhci_reset() does.
++ *
++ * Without this the PHY keeps whatever the FSBL left behind: TX/RX clocks
++ * un-inverted, the 1T latency bit clear and the TX bypass off. Reads then work
++ * at default speed and are marginal at SD high-speed -- "Invalid FAT entry",
++ * "Error reading cluster", "No partition table" on media that is byte-correct.
++ * The driver only ever touched these registers from platform_execute_tuning(),
++ * which never runs on a 3.3V-only board because no-1-8-v masks out every UHS
++ * mode. So on this board they were never programmed at all.
++ *
++ * set_control_reg is the one hook the SDHCI core calls on each set_ios before
++ * it programs the clock, which makes it the closest thing U-Boot has to the
++ * kernel's ->reset callback. It deliberately does NOT chain to
++ * sdhci_set_control_reg(): this driver has never had a set_control_reg op, so
++ * the generic voltage-switch and UHS-timing handling has never run here, and
++ * on a no-1-8-v board sdhci_set_voltage() is exactly the CMD11 path that
++ * wedges the card (see the no-1-8-v quirk below).
++ */
++static void cv1800b_sdhci_phy_init(struct sdhci_host *host)
++{
++	int area = cv1800b_vendor_area1(host);
++	u16 clk;
++	u32 val;
++
++	/* Gate the card clock across the PHY writes, as cv18xx_sdhci_set_tap()
++	 * does; the delay lines must not move under a running clock.
++	 */
++	clk = sdhci_readw(host, SDHCI_CLOCK_CONTROL);
++	sdhci_writew(host, clk & ~SDHCI_CLOCK_CARD_EN, SDHCI_CLOCK_CONTROL);
++
++	val = sdhci_readl(host, area + CV18XX_MSHC_CTRL);
++	val |= CV18XX_LATANCY_1T;
++	sdhci_writel(host, val, area + CV18XX_MSHC_CTRL);
++
++	val = sdhci_readl(host, area + CV18XX_PHY_CONFIG);
++	val |= CV18XX_PHY_TX_BPS;
++	sdhci_writel(host, val, area + CV18XX_PHY_CONFIG);
++
++	/* TX delay 0 / RX delay 0, both source clocks inverted. */
++	sdhci_writel(host, PHY_TX_SRC_INVERT | PHY_RX_SRC_INVERT,
++		     area + CV18XX_PHY_TX_RX_DLY);
++
++	sdhci_writew(host, clk, SDHCI_CLOCK_CONTROL);
++	udelay(1000);
++}
+ 
+ struct cv1800b_sdhci_plat {
+ 	struct mmc_config cfg;
+@@ -22,7 +91,8 @@
+ #if CONFIG_IS_ENABLED(MMC_SUPPORTS_TUNING)
+ static void cv1800b_set_tap_delay(struct sdhci_host *host, u16 tap)
+ {
+-	sdhci_writel(host, PHY_TX_SRC_INVERT | tap << 16, SDHCI_PHY_TX_RX_DLY);
++	sdhci_writel(host, PHY_TX_SRC_INVERT | tap << 16,
++		     cv1800b_vendor_area1(host) + CV18XX_PHY_TX_RX_DLY);
+ }
+ 
+ static void cv1800b_sdhci_reset(struct sdhci_host *host, u8 mask)
+@@ -65,6 +135,7 @@
+ #endif
+ 
+ const struct sdhci_ops cv1800b_sdhci_sd_ops = {
++	.set_control_reg = cv1800b_sdhci_phy_init,
+ #if CONFIG_IS_ENABLED(MMC_SUPPORTS_TUNING)
+ 	.platform_execute_tuning = cv1800b_execute_tuning,
+ #endif
+@@ -109,7 +180,14 @@
+ 	if (dev_read_bool(dev, "no-1-8-v"))
+ 		host->quirks |= SDHCI_QUIRK_NO_1_8_V;
+ 
+-	ret = sdhci_setup_cfg(&plat->cfg, host, 0, 200000);
++	/*
++	 * Pass the parsed f_max back in rather than 0. mmc_of_parse() has
++	 * already put the DT "max-frequency" into cfg->f_max, but
++	 * sdhci_setup_cfg() overwrites cfg->f_max with host->max_clk whenever
++	 * its f_max argument is zero -- so with 0 the DT property was silently
++	 * discarded and the bus ran at whatever the negotiated mode allowed.
++	 */
++	ret = sdhci_setup_cfg(&plat->cfg, host, plat->cfg.f_max, 200000);
+ 	if (ret)
+ 		return ret;
+ 

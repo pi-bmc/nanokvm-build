@@ -1,6 +1,6 @@
 From: NanoKVM build <nbatkins@gmail.com>
 Date: Tue, 8 Jul 2026 00:00:00 +0000
-Subject: [PATCH] riscv: dts: sophgo: nanokvm board (usb, i2c1 eeprom, ethernet)
+Subject: [PATCH] riscv: dts: sophgo: nanokvm board (usb, uart, gpio, ethernet)
 
 NanoKVM board customisation, applied on top of the upstream USB backport
 (0001-apply-dts-usb-dev.patch):
@@ -9,12 +9,13 @@ NanoKVM board customisation, applied on top of the upstream USB backport
     NanoKVM BMC role needs the gadget stack (HID / mass-storage / ECM /
     UVC to the managed machine), so switch it to "peripheral".
 
-  * I2C1: enable i2c1@4010000 and repurpose two SDIO1 pads as its bus
-    (SD1_D3 -> IIC1_SCL, SD1_D0 -> IIC1_SDA, both pad funcsel 2, the
-    mainline replacement for the vendor devmem pinmux hack). Add the
-    i2c-slave-eeprom child with the I2C_OWN_SLAVE_ADDRESS flag so the
-    DesignWare controller probes in slave mode and presents an EEPROM to
-    the external host (Raspberry Pi).
+  * The SDIO1 pads (SD1_D3 / SD1_D0) are deliberately left unmuxed. They
+    used to carry a second i2c bus whose only child was an
+    i2c-slave-eeprom presenting a 24c512 to the managed host. Nothing
+    consumes that channel any more, so the bus, the slave EEPROM and their
+    pinmux are all gone -- along with the DesignWare slave-mode probe they
+    were the only reason for. The board's one remaining i2c bus is the
+    LT6911C control bus enabled by patch 0012.
 
   * Ethernet: enable gmac0 + the mdio-mux so the SG2002 internal 10/100
     EPHY comes up as eth0.
@@ -25,7 +26,7 @@ diff --git a/arch/riscv/boot/dts/sophgo/sg2002-licheerv-nano-b.dts b/arch/riscv/
 index b185377..d093ecb 100644
 --- a/arch/riscv/boot/dts/sophgo/sg2002-licheerv-nano-b.dts
 +++ b/arch/riscv/boot/dts/sophgo/sg2002-licheerv-nano-b.dts
-@@ -95,6 +95,82 @@
+@@ -95,6 +95,61 @@
  };
  
  &usb {
@@ -35,16 +36,6 @@ index b185377..d093ecb 100644
 +};
 +
 +&pinctrl {
-+	i2c1_cfg: i2c1-cfg {
-+		i2c1-pins {
-+			pinmux = <PINMUX(PIN_SD1_D3, 2)>,
-+				 <PINMUX(PIN_SD1_D0, 2)>;
-+			bias-pull-up;
-+			drive-strength-microamp = <10800>;
-+			power-source = <3300>;
-+		};
-+	};
-+
 +	uart1_cfg: uart1-cfg {
 +		uart1-pins {
 +			pinmux = <PINMUX(PIN_JTAG_CPU_TMS, 6)>,
@@ -65,17 +56,6 @@ index b185377..d093ecb 100644
 +			drive-strength-microamp = <10800>;
 +			power-source = <3300>;
 +		};
-+	};
-+};
-+
-+&i2c1 {
-+	pinctrl-0 = <&i2c1_cfg>;
-+	pinctrl-names = "default";
-+	status = "okay";
-+
-+	eeprom@50 {
-+		compatible = "linux,slave-24c512";
-+		reg = <0x40000050>;
 +	};
 +};
 +

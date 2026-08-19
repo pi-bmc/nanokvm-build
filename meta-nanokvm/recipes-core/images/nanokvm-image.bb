@@ -19,15 +19,17 @@ IMAGE_FSTYPES += "squashfs-zst"
 IMAGE_TYPEDEP:wic = "squashfs-zst"
 WKS_FILE = "nanokvm-sd.wks.in"
 
-# wic consumes boot_a.itb/boot_b.itb (IMAGE_BOOT_FILES) and uboot-env.bin (the
-# raw env partition), so both producers must have deployed before do_image_wic.
+# wic consumes boot.scr and boot_a.itb/boot_b.itb (IMAGE_BOOT_FILES) and
+# uboot-env.bin (the raw env sectors), so every producer must have deployed
+# before do_image_wic.
 do_image_wic[depends] += "nanokvm-boot-fit:do_deploy nanokvm-uboot-env:do_deploy"
+do_image_wic[depends] += "nanokvm-boot-script:do_deploy"
 
 # Use the plain packagegroup-base (not -extended): -extended unconditionally
 # RDEPENDS packagegroup-base-wifi -> wireless-regdb-static and would drag in
 # wireless kernel modules. WiFi is intentionally absent from this image (the
-# SDIO1 pads are repurposed as I2C1 for the I2C slave EEPROM), so packagegroup-base
-# pulls the wifi subgroup only when MACHINE_FEATURES advertises it -- it does not.
+# board carries no radio part), so packagegroup-base pulls the wifi subgroup
+# only when MACHINE_FEATURES advertises it -- it does not.
 CORE_IMAGE_BASE_INSTALL = "packagegroup-core-boot packagegroup-base"
 
 # --- Features ---
@@ -129,15 +131,16 @@ IMAGE_INSTALL:append = " \
     "
 
 # --- WiFi / Bluetooth ---
-# Intentionally none. The SDIO1 pads are repurposed as I2C1 for the I2C slave
-# EEPROM, and CONFIG_WLAN / CONFIG_WIRELESS / CONFIG_BT are off in nanokvm.cfg.
+# Intentionally none. There is no radio part on the board, and CONFIG_WLAN /
+# CONFIG_WIRELESS / CONFIG_BT are off in nanokvm.cfg.
 
 # --- Boot health / A/B -----------------------------------------------------
-# nanokvm-bootok ends an update's probation once the slot has proven it boots
-# (and, by clearing upgrade_available, keeps healthy boots from writing to the
-# environment at all); nanokvm-growdata does the partition growth that used to
-# run in the initramfs. It pulls in fw_setenv, which is also what an update
-# flow uses to flip bootslot.
+# The userspace half of the RAUC A/B flow. nanokvm-bootok restores the running
+# slot's BOOT_<slot>_LEFT once the slot has proven it boots -- mandatory, not
+# optional: the bootmeth decrements that counter on every boot, so without this
+# a healthy system counts itself down and switches slots for no reason.
+# nanokvm-update installs an image into the inactive slot and activates it, and
+# nanokvm-growdata does the partition growth that used to run in the initramfs.
 IMAGE_INSTALL:append = " \
     nanokvm-boot-health \
     "
@@ -207,11 +210,12 @@ IMAGE_INSTALL:append = " \
 # creates a uvc function (see nanokvm.cfg).
 
 # --- NanoKVM application ---
-# i2c-eeprom is gone: the board DTS declares both the i2c1 pinmux and the
-# eeprom@50 slave node, so the kernel binds i2c-slave-eeprom at boot and the
-# init script's only remaining effect was to re-apply a pinmux pinctrl had
-# already set. nanokvm-gadget is deploy-only now (boot-partition files via
-# do_image_wic below) -- its first-boot seeding script moved into the server.
+# i2c-eeprom is gone, and so is the bus it served: the i2c1 slave EEPROM that
+# presented a 24c512 to the managed host has no consumer any more, so the board
+# DTS no longer declares it and the kernel no longer builds slave-mode i2c
+# (board DTS patch 0003, nanokvm.cfg). nanokvm-gadget is deploy-only now
+# (boot-partition files via do_image_wic below) -- its first-boot seeding
+# script moved into the server.
 IMAGE_INSTALL:append = " \
     nanokvm-server \
     "
@@ -270,12 +274,58 @@ do_image_wic[depends] += "fsbl:do_deploy linux-sophgo:do_deploy nanokvm-initramf
 # (server/service/usbgadget owns the gadget now; usb.ecm0 seeds the default ECM
 # function on first boot).
 #
-# Gone from this list: "extlinux.conf" (the boot menu -- the payload is a single
-# FIT now, loaded straight from the U-Boot env), "slot" (the rootfs selector --
-# it lives in the U-Boot environment so nothing has to write to the boot
-# partition to change it) and the standalone initramfs (packed into the FIT).
+# Gone from this list: "extlinux.conf" (the boot menu -- boot.scr replaced it,
+# deployed by nanokvm-boot-script), "slot" (the rootfs selector -- the RAUC
+# bootmeth keeps it in the U-Boot environment, so nothing has to write to the
+# boot partition to change slots) and the standalone initramfs (packed into
+# the FIT).
 IMAGE_BOOT_FILES:append = " board hostname.prefix ver usb.ecm0"
 do_image_wic[depends] += "nanokvm-gadget:do_deploy"
+
+# --- A/B update bundle -----------------------------------------------------
+# What nanokvm-update consumes: the two halves of a slot, together. They have
+# to ship as one artifact because they have to be installed as one -- the FIT
+# carries the initramfs that mounts the squashfs, and installing either without
+# the other leaves a slot that boots the wrong pair.
+#
+# Plain tar + gzip, because the image has busybox tar and gzip and no xz, and
+# the payload is a zstd squashfs already. Reproducible: sorted names, epoch
+# mtime, numeric owner, gzip -n.
+# do_update_bundle runs as a postfunc, not a task, so its dependency has to
+# hang on the task that actually runs it.
+do_image_complete[depends] += "nanokvm-boot-fit:do_deploy"
+do_update_bundle() {
+    stage="${WORKDIR}/update-bundle"
+    rm -rf "$stage"
+    mkdir -p "$stage"
+    squashfs="${IMGDEPLOYDIR}/${IMAGE_LINK_NAME}.squashfs-zst"
+    itb="${DEPLOY_DIR_IMAGE}/boot_a.itb"
+
+    if [ ! -e "$squashfs" ]; then
+        bbwarn "update bundle: $squashfs missing, skipping"
+        return
+    fi
+    [ -e "$itb" ] || bbfatal "update bundle: $itb missing (nanokvm-boot-fit should have deployed it)"
+
+    # boot_a.itb and boot_b.itb are the same bytes at build time; the slot is
+    # chosen at install time by nanokvm-update, so the bundle carries one.
+    cp -L "$squashfs" "$stage/rootfs.squashfs"
+    cp -L "$itb"      "$stage/boot.itb"
+    ( cd "$stage" && sha256sum rootfs.squashfs boot.itb > sha256sums )
+
+    tar --sort=name --owner=0 --group=0 --numeric-owner \
+        --mtime="@${SOURCE_DATE_EPOCH}" \
+        -cf "$stage/bundle.tar" -C "$stage" boot.itb rootfs.squashfs sha256sums
+    gzip -n -f "$stage/bundle.tar"
+
+    install -m 0644 "$stage/bundle.tar.gz" "${IMGDEPLOYDIR}/${IMAGE_NAME}.update.tar.gz"
+    ln -sf "${IMAGE_NAME}.update.tar.gz" "${IMGDEPLOYDIR}/${IMAGE_LINK_NAME}.update.tar.gz"
+    bbplain "update bundle: $(stat -c %s "$stage/bundle.tar.gz") B -> ${IMAGE_LINK_NAME}.update.tar.gz"
+}
+# After do_image_complete so the squashfs is in IMGDEPLOYDIR, and registered as
+# one of its postfuncs' peers rather than a separate sstate task: the bundle
+# lands in IMGDEPLOYDIR, which do_image_complete captures.
+do_image_complete[postfuncs] += "do_update_bundle"
 
 # --- Publish under the original LicheeRV-Nano-Build image name ---
 # The upstream build emitted ${BOARD_SHORT}-${VARIANT}_${STORAGE_TYPE}.img.xz =

@@ -7,10 +7,12 @@
 #   2. (nothing -- see below). Creating/growing the data partition used to
 #      happen here; it moved to userspace (nanokvm-growdata) so that no
 #      partition-table write ever happens on the boot path.
-#   3. Pick a rootfs slot from nanokvm.slot=<a|b> on the kernel cmdline, which
-#      U-Boot sets from the same bootslot variable that chose the FIT. A slot
-#      that fails to mount falls back to the other, so a half-written image
-#      update can never brick the BMC.
+#   3. Pick a rootfs slot from rauc.slot=<a|b> on the kernel cmdline, which
+#      U-Boot's RAUC bootmeth sets from the same slot that chose the FIT. A
+#      slot that fails to mount falls back to the other, so a half-written
+#      image update can never brick the BMC -- and the slot actually mounted is
+#      recorded for userspace, because a silent fallback is how an updater ends
+#      up overwriting the rootfs it is running from.
 #   4. Mount the slot's squashfs read-only, lay a tmpfs overlay upper over it
 #      (VOLATILE by design: the root is byte-identical to the image on every
 #      boot; anything that must survive lives on the data partition), and
@@ -83,18 +85,20 @@ done
 # tmpfs (step 4 already did), and the next boot has it.
 
 # --- 3. slot selection -----------------------------------------------------
-# The slot arrives on the kernel command line as nanokvm.slot=<a|b>, put there
-# by U-Boot from its own bootslot variable. It used to be read from a "slot"
-# file on the FAT boot partition, which meant (a) mounting a filesystem here
-# just to read one byte, and (b) something, somewhere, writing to the boot
-# partition to change it. Now the same variable that picked the FIT picks the
-# rootfs, so the two halves of a slot cannot disagree, and nothing on the boot
-# path is writable.
+# The slot arrives on the kernel command line as rauc.slot=<a|b>. U-Boot's RAUC
+# bootmeth sets it (as raucargs) from the slot it selected out of BOOT_ORDER,
+# and boot.scr passes it through -- the same choice that picked boot_<slot>.itb
+# picks the rootfs, so the two halves of a slot cannot disagree.
+#
+# It used to be read from a "slot" file on the FAT boot partition, which meant
+# (a) mounting a filesystem here just to read one byte, and (b) something,
+# somewhere, writing to the boot partition to change it. Nothing on the boot
+# path is writable now.
 SLOT=a
 for arg in $(cat /proc/cmdline 2>/dev/null); do
     case "$arg" in
-        nanokvm.slot=b) SLOT=b ;;
-        nanokvm.slot=a) SLOT=a ;;
+        rauc.slot=b) SLOT=b ;;
+        rauc.slot=a) SLOT=a ;;
     esac
 done
 if [ "$SLOT" = "b" ]; then
@@ -114,12 +118,26 @@ for dev in $TRY; do
     msg "no usable rootfs on $dev, trying fallback slot"
 done
 [ -n "$LOWER" ] || rescue "no bootable rootfs in either slot"
-msg "rootfs: $LOWER (slot $SLOT)"
+case "$LOWER" in
+    ${DISK}p3) ACTUAL=b ;;
+    *)         ACTUAL=a ;;
+esac
+msg "rootfs: $LOWER (slot $ACTUAL)"
+[ "$ACTUAL" = "$SLOT" ] || msg "WARNING: asked for slot $SLOT, fell back to $ACTUAL"
 
 # Volatile upper: capped so runaway writes to the root can never take the
 # whole of RAM (real state belongs on the data partition).
 mount -t tmpfs -o size=25%,mode=0755 tmpfs /mnt/rw
 mkdir -p /mnt/rw/upper /mnt/rw/work
+
+# Record the slot actually mounted, for nanokvm-bootok. Without it a fallback
+# is invisible to userspace: the cmdline still says the slot U-Boot asked for,
+# so the health check would mark THAT slot good even though it is the one that
+# just failed to mount -- and an updater computing "the other slot" from the
+# environment would target the rootfs it is running from. This sits beside
+# upper/ and work/ rather than inside them, so it never appears in the merged
+# root; the final system reads it at /mnt/initramfs/rw/bootslot.
+printf '%s\n' "$ACTUAL" > /mnt/rw/bootslot
 mount -t overlay \
     -o "lowerdir=/mnt/ro,upperdir=/mnt/rw/upper,workdir=/mnt/rw/work" \
     overlay /mnt/root || rescue "overlay mount failed"

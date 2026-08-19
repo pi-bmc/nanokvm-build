@@ -3,14 +3,16 @@
 # The base recipe (meta-sophgo/recipes-kernel/linux/linux-sophgo_6.18.bb) builds
 # mainline v6.18 with the unified riscv `defconfig`. Here we:
 #   * backport the upstream cv18xx USB DTS node + enable it on nano-b,
-#   * merge the NanoKVM config-fragment delta (size trim, USB gadget, i2c-slave),
+#   * merge the NanoKVM config-fragment delta (size trim, USB gadget, i2c),
 #   * assert the resulting Image fits U-Boot's stock kernel staging window.
 #
-# There is no FIT (boot.sd) any more. U-Boot's extlinux support
-# (bootmeth_extlinux -> pxe_utils) loads the raw Image at ${kernel_addr_r} and
-# the DTB at ${fdt_addr_r} from the separate files named by extlinux.conf's
-# KERNEL / DEVICETREE keys, then boots with `booti`. wic places both on the FAT
-# boot partition via IMAGE_BOOT_FILES (see the machine conf).
+# The Image does not ship as a standalone boot file. nanokvm-boot-fit packs it
+# with the board DTB and the initramfs into one hash-verified FIT
+# (boot_<slot>.itb) that U-Boot stages at kernel_addr_r=0x83000000 and extracts
+# down to the 0x80200000 run address; wic places the two slot copies on the FAT
+# boot partition via IMAGE_BOOT_FILES (see the machine conf). The size budget
+# asserted at the bottom of this file is what keeps the running kernel clear of
+# the FIT's own FDT load address.
 FILESEXTRAPATHS:prepend := "${THISDIR}/files:"
 
 # DTS backports for USB (v6.18 has the drivers but not the DT nodes). ORDER
@@ -21,7 +23,9 @@ FILESEXTRAPATHS:prepend := "${THISDIR}/files:"
 #        child of the top syscon) that 0001 references -- absent in v6.18, so
 #        without it dtc fails "Reference to non-existent node or label usbphy".
 #   0003 local board tweaks on top of 0001: &usb -> dr_mode "peripheral" (gadget
-#        role) and i2c1 on the repurposed SDIO1 pads for the slave EEPROM.
+#        role), uart1/gpio0 pinmux, the porta line names and gmac0/mdio. The
+#        i2c1 bus it used to add on the SDIO1 pads is gone with the slave
+#        EEPROM it carried; those pads are now unmuxed.
 #        (0007 and 0008 are gone: an out-of-tree PHY driver for the internal
 #        EPHY, and the DTS node that declared it with a hardcoded id. Ethernet
 #        is back to upstream code only -- U-Boot's board_init() runs the vendor
@@ -62,11 +66,11 @@ FILESEXTRAPATHS:prepend := "${THISDIR}/files:"
 #        bootm_size cap in u-boot's 0006: U-Boot relocates the initrd and FDT
 #        to the top of usable DRAM, which lands inside this carveout and makes
 #        the kernel reject the no-map reservation outright.
-#   0012 enables i2c4, the LT6911C HDMI bridge's control bus, and pins the i2c
-#        bus numbers with aliases. Without it the board has exactly one i2c bus
-#        and nothing can reach the bridge to read the input resolution or write
-#        EDID, so capture cannot be brought up at all. MUST follow 0003 and
-#        0011 -- it appends to the same board .dts they edit.
+#   0012 enables i2c4, the LT6911C HDMI bridge's control bus, and pins its bus
+#        number with an alias. Without it the board has no i2c bus at all and
+#        nothing can reach the bridge to read the input resolution or write
+#        EDID, so capture cannot be brought up. MUST follow 0003 and 0011 --
+#        it appends to the same board .dts they edit.
 # nanokvm.cfg is merged in do_configure:append below.
 SRC_URI:append:sg2002-licheervnano = " \
     file://0001-apply-dts-usb-dev.patch \

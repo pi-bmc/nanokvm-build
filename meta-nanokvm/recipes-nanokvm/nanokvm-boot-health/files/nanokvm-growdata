@@ -44,9 +44,14 @@ fi
 
 log "growing $PART to fill the card ($tail sectors unclaimed)"
 # The partition entry can be grown while mounted; the kernel refuses to re-read
-# the table (EBUSY), so resize2fs online-grows what it can see after
-# BLKPG-style update. If the entry grew but the fs did not, the next run of
-# this script (next boot) finishes the job -- hence the ordering.
+# the whole table (EBUSY), so sfdisk/partx resize just this entry via BLKPG and
+# resize2fs then grows the filesystem online into it.
+#
+# If the entry grows but resize2fs does not, this script will NOT retry: the
+# tail is claimed now, so the next run takes the early exit above. What
+# finishes the job is the initramfs, which runs resize2fs on every boot right
+# after mounting the data partition. Do not remove that call as redundant --
+# it is the only thing that closes this gap.
 echo ', +' | sfdisk --quiet -N 4 --force "$DISK" || { log "sfdisk grow failed"; exit 0; }
 partx -u "$PART" 2>/dev/null || partprobe "$DISK" 2>/dev/null || true
 resize2fs "$PART" >/dev/null 2>&1 || log "resize2fs deferred to next boot"

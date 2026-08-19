@@ -1,26 +1,28 @@
 # NanoKVM SD card partition layout for Sophgo SG2002 / LicheeRV Nano
 #
 # Partition map (MBR, all four primaries):
-#   raw:  512 KiB    - U-Boot environment (primary copy, 64 KiB) at offset
-#                        0x80000, with the redundant copy's 64 KiB reserved at
-#                        0x90000. This is the ONLY mutable boot state and it
-#                        lives in the all-zero 1 MiB gap between the MBR and
-#                        p1, outside every filesystem: a redundant env is two
-#                        copies switched atomically, so a power cut mid-write
-#                        always leaves one valid. It carries the A/B slot.
-#   p1: FAT16,  80 MB  - fip.bin (OpenSBI+U-Boot FIT), boot_a.itb / boot_b.itb
-#                        (each a single FIT: kernel + DTB + initramfs), and the
-#                        NanoKVM runtime config files (IMAGE_BOOT_FILES).
-#                        MOUNTED READ-ONLY at runtime -- nothing writes here,
-#                        so a crash cannot corrupt the boot payload.
+#   raw:  512 KiB    - U-Boot environment, BOTH redundant copies, 64 KiB each
+#                        at 0x80000 and 0x90000. This is the ONLY mutable boot
+#                        state and it lives in the all-zero 1 MiB gap between
+#                        the MBR and p1, outside every filesystem: a redundant
+#                        env is two copies switched atomically, so a power cut
+#                        mid-write always leaves one valid. It carries the RAUC
+#                        slot state (BOOT_ORDER, BOOT_<slot>_LEFT).
+#   p1: FAT16,  80 MB  - fip.bin (OpenSBI+U-Boot FIT), boot.scr, boot_a.itb /
+#                        boot_b.itb (each a single FIT: kernel + DTB +
+#                        initramfs), and the NanoKVM runtime config files
+#                        (IMAGE_BOOT_FILES). MOUNTED READ-ONLY at runtime --
+#                        only nanokvm-update remounts it, to write the inactive
+#                        slot's FIT, and it puts it back.
 #   p2: 512 MB         - rootfs slot A: the squashfs-zst image (read-only;
 #                        the initramfs lays a volatile tmpfs overlay over it).
-#   p3: 512 MB         - rootfs slot B: empty ext4 placeholder at factory. An
-#                        image update writes a new squashfs here and flips
-#                        bootslot in the U-Boot env; U-Boot passes the slot to
-#                        the initramfs as nanokvm.slot= on the cmdline, and the
-#                        initramfs falls back to the other slot when the
-#                        selected one does not mount.
+#   p3: 512 MB         - rootfs slot B: empty ext4 placeholder at factory.
+#                        nanokvm-update writes a new squashfs here and moves
+#                        slot b to the head of BOOT_ORDER; U-Boot's RAUC
+#                        bootmeth passes the slot to the initramfs as
+#                        rauc.slot= on the cmdline, and the initramfs falls
+#                        back to the other slot when the selected one does not
+#                        mount.
 #   p4: 640 MB         - ext4 userdata partition (/var/lib/nanokvm). EMPTY at
 #                        factory. It used to ship pre-populated with a Pi boot
 #                        image for the USB mass-storage gadget to serve; the
@@ -50,11 +52,19 @@
 # /boot mount silently fails. "mmcblk0" yields the correct "/dev/mmcblk0p1".
 
 bootloader --ptable msdos
-# U-Boot environment, primary copy: 64 KiB at offset 512 KiB (0x80000), with
-# the redundant copy's slot at 0x90000..0xA0000 left reserved -- U-Boot writes
-# that one on the first saveenv. --no-table keeps it out of the MBR: these are
-# raw sectors, not a partition. It is clear of p1 (1 MiB) and of the ~43 KiB
-# the boot ROM reads from the head of the card.
+# U-Boot environment: both 64 KiB copies, 0x80000..0xA0000, written as one
+# 128 KiB blob (nanokvm-uboot-env concatenates the copy with itself).
+# --no-table keeps it out of the MBR: these are raw sectors, not a partition.
+# It is clear of p1 (1 MiB) and of the ~43 KiB the boot ROM reads from the head
+# of the card.
+#
+# Both copies are seeded on purpose. Writing only the primary leaves the second
+# slot as a hole in the .wic, and `bmaptool copy` -- what the machine conf
+# recommends and hack/flash-sd.sh prefers -- skips holes. Re-flashing a card
+# that had ever run saveenv would then keep its OLD redundant copy, and both
+# U-Boot and libubootenv pick whichever copy has the higher flag byte: the
+# stale one. Two identical copies are fine; with equal flags both pick the
+# primary.
 #
 # UNITS: --offset defaults to KiB but --fixed-size defaults to MiB, so the
 # suffix on 128K is load-bearing. Without it wic reserves 128 MiB here and
