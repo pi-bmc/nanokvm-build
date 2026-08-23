@@ -6,8 +6,8 @@ LIC_FILES_CHKSUM = "file://src/${GO_IMPORT}/LICENSE;md5=1ebbd3e34237af26da5dc08a
 inherit go-mod go
 
 # NB: the GitHub repo is pi-bmc/nanokvm-app, but the Go module path (go.mod) is
-# github.com/BMCPi/NanoKVM -- GO_IMPORT must match the module path, not the URL.
-GO_IMPORT = "github.com/BMCPi/NanoKVM"
+# github.com/pi-bmc/nanokvm-app -- GO_IMPORT must match the module path, not the URL.
+GO_IMPORT = "github.com/pi-bmc/nanokvm-app"
 SRCREV = "${AUTOREV}"
 SRC_URI = "git://github.com/pi-bmc/nanokvm-app;branch=edk2;protocol=https \
            file://nanokvm-server-run"
