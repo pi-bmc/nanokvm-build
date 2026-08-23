@@ -4,8 +4,8 @@ Subject: [PATCH] riscv: dts: sophgo: nanokvm: enable i2c4 for the LT6911C
 The HDMI-to-CSI bridge that feeds the capture pipeline is controlled over
 i2c4 at 0x2b -- it is how the input resolution is read and the EDID written.
 Mainline leaves i2c@4040000 disabled and there is no upstream pinctrl for it,
-so nothing in the running system can reach the bridge: without this the board
-comes up with no i2c bus at all.
+so nothing in the running system can reach the bridge: the board comes up with
+a single i2c bus (the slave EEPROM on i2c@4010000).
 
 The pad choice and the alias handling are both load-bearing and both are
 explained inline in the DTS rather than here, because that is where anyone
@@ -17,7 +17,7 @@ Not upstream -- local to this build.
 ---
 --- a/arch/riscv/boot/dts/sophgo/sg2002-licheerv-nano-b.dts
 +++ b/arch/riscv/boot/dts/sophgo/sg2002-licheerv-nano-b.dts
-@@ -255,3 +255,54 @@
+@@ -255,3 +255,58 @@
  &cvi_vc_drv {
  	status = "okay";
  };
@@ -57,18 +57,22 @@ Not upstream -- local to this build.
 +};
 +
 +/*
-+ * Pin the bus number. i2c_init() does of_alias_get_highest_id("i2c") and
-+ * starts *dynamic* numbering above it, so with no alias this controller lands
-+ * on whatever number allocation happens to hand out. The alias holds the
-+ * bridge at /dev/i2c-4, which is where the vendor EDID tooling and every
-+ * debugging note assume it is.
++ * Pin BOTH bus numbers, not just i2c4. i2c_init() does
++ * of_alias_get_highest_id("i2c") and starts *dynamic* numbering above it, so
++ * declaring i2c4 alone would push the slave-EEPROM controller (i2c@4010000)
++ * up to bus 5, and moving it again later would move its sysfs path with it.
++ * i2c0 = &i2c1 is not a typo: it holds that controller at bus 0 so
++ * /sys/bus/i2c/devices/0-1050 stays where every debugging note says it is,
++ * while i2c4 = &i2c4 puts the bridge at /dev/i2c-4 where the vendor EDID
++ * tooling looks for it.
 + *
-+ * This block used to pin a second alias to hold the slave-EEPROM controller
-+ * at bus 0. That bus is gone (patch 0003), so i2c4 is the only entry left and
-+ * there is nothing left for the dynamic allocator to displace.
++ * Nothing on the BMC reads the EEPROM today -- the managed host writes it and
++ * the samples are consumed there -- so the number is a stability choice, not
++ * a functional dependency.
 + */
 +/ {
 +	aliases {
++		i2c0 = &i2c1;
 +		i2c4 = &i2c4;
 +	};
 +};

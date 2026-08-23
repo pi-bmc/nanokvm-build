@@ -23,9 +23,9 @@ FILESEXTRAPATHS:prepend := "${THISDIR}/files:"
 #        child of the top syscon) that 0001 references -- absent in v6.18, so
 #        without it dtc fails "Reference to non-existent node or label usbphy".
 #   0003 local board tweaks on top of 0001: &usb -> dr_mode "peripheral" (gadget
-#        role), uart1/gpio0 pinmux, the porta line names and gmac0/mdio. The
-#        i2c1 bus it used to add on the SDIO1 pads is gone with the slave
-#        EEPROM it carried; those pads are now unmuxed.
+#        role), uart1/gpio0 pinmux, the porta line names and gmac0/mdio, plus
+#        the i2c1 bus on the SDIO1 pads carrying the slave EEPROM that the
+#        managed host's OP-TEE sensor pTA writes its samples into.
 #        (0007 and 0008 are gone: an out-of-tree PHY driver for the internal
 #        EPHY, and the DTS node that declared it with a hardcoded id. Ethernet
 #        is back to upstream code only -- U-Boot's board_init() runs the vendor
