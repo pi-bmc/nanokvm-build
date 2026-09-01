@@ -162,8 +162,10 @@ jobs:
         run: bash "${GITHUB_WORKSPACE}/.github/scripts/yocto-cache.sh" save sstate-kernel downloads-kernel
 
   # ── Stage 2b: Bootloader ─────────────────────────────────────────────────────
-  # Builds u-boot-sophgo (which produces fip.bin / boot.sd via the recipe's
-  # deploy tasks). Saves to :sstate-bootloader.
+  # Builds u-boot (mainline, meta-sophgo/recipes-bsp/u-boot/u-boot_2026.07.bb --
+  # the recipe was renamed from u-boot-sophgo when the board moved to mainline
+  # U-Boot; fip.bin / boot.sd come from the recipe's deploy tasks). Saves to
+  # :sstate-bootloader.
   bootloader:
     needs: [toolchain]
     runs-on: ubuntu-latest
@@ -217,7 +219,7 @@ jobs:
             checkpoint_pid=$!
             trap '[ -n "${checkpoint_pid}" ] && kill "${checkpoint_pid}" 2>/dev/null || true' EXIT INT TERM
           fi
-          kas shell kas.yml -c "bitbake u-boot-sophgo"
+          kas shell kas.yml -c "bitbake u-boot"
 
       - name: Save Yocto OCI caches
         if: ${{ always() && env.CACHE_ENABLED == 'true' }}
@@ -280,9 +282,8 @@ jobs:
             trap '[ -n "${checkpoint_pid}" ] && kill "${checkpoint_pid}" 2>/dev/null || true' EXIT INT TERM
           fi
           kas shell kas.yml -c "bitbake \
-            nanokvm-server \
-            input-event-daemon ssdp-responder uvc-gadget \
-            cvi-pinmux sg2002-codec-firmware sophgo-middleware cvi-rtsp axp2101"
+            nanokvm-server nanokvm-gadget nanokvm-boot-health \
+            soph-media"
 
       - name: Save Yocto OCI caches
         if: ${{ always() && env.CACHE_ENABLED == 'true' }}
