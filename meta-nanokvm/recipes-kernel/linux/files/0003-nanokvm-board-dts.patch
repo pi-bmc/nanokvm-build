@@ -9,6 +9,22 @@ NanoKVM board customisation, applied on top of the upstream USB backport
     NanoKVM BMC role needs the gadget stack (HID / mass-storage / ECM /
     UVC to the managed machine), so switch it to "peripheral".
 
+    It also re-slices g-tx-fifo-size into seven entries. dwc2 needs one
+    dedicated TX FIFO per IN endpoint, and the composite can now present
+    seven: mass storage 1, NCM 2 (bulk + notify), two HID 1 each, and
+    CDC ACM 2 (bulk + notify). The dtsi declares only six, which leaves
+    ep7in — present in the silicon, which reports num_dev_ep 7 with
+    dev_ep_dirs 0 — with no FIFO, so the seventh IN endpoint fails to
+    enable with -ENOMEM ("No suitable fifo found").
+
+    Every entry is >= 128 words (512 B, one max-size bulk packet)
+    because dwc2 allocates first-fit and NCM's bulk IN is enabled late,
+    when the host selects data alt-setting 1: a smaller trailing FIFO
+    would be the only one left for it and the allocation would fail.
+    The total is unchanged at 2432 words — 3000 of the 3072-word SPRAM
+    once the 536-word RX and 32-word non-periodic TX FIFOs are counted —
+    so only the 384-word entry shrinks, to 256.
+
   * I2C1: enable i2c1@4010000 and repurpose two SDIO1 pads as its bus
     (SD1_D3 -> IIC1_SCL, SD1_D0 -> IIC1_SDA, both pad funcsel 2, the
     mainline replacement for the vendor devmem pinmux hack). Add the
@@ -31,12 +47,18 @@ diff --git a/arch/riscv/boot/dts/sophgo/sg2002-licheerv-nano-b.dts b/arch/riscv/
 index b185377..d093ecb 100644
 --- a/arch/riscv/boot/dts/sophgo/sg2002-licheerv-nano-b.dts
 +++ b/arch/riscv/boot/dts/sophgo/sg2002-licheerv-nano-b.dts
-@@ -95,6 +95,82 @@
+@@ -95,6 +95,88 @@
  };
  
  &usb {
 -	dr_mode = "host";
 +	dr_mode = "peripheral";
++
++	/* Seven dedicated IN TX FIFOs (the dtsi declares six) so the
++	 * composite can add CDC ACM; all >= 128 words because dwc2 allocates
++	 * first-fit and NCM's bulk IN is enabled late. See the commit message.
++	 */
++	g-tx-fifo-size = <768 512 512 256 128 128 128>;
 +	status = "okay";
 +};
 +
