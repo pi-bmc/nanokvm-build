@@ -68,21 +68,17 @@ do_compile() {
     chmod -R u+w ${B}/.mod 2>/dev/null || true
 }
 
-# Compress the binary the way the upstream Makefile's dist/server target does
-# (`upx -q -v ./dist/server/NanoKVM-Server`), from a native UPX rather than a
-# host tool so the build stays hermetic.
-#
-# NOTE (measured on the 2026-08 tree, 43.5 MB server binary): this SHRINKS the
-# binary to 14.4 MB but GROWS the squashfs, because IMAGE_FSTYPES is
-# squashfs-zst and zstd compresses the plain binary better than UPX does
-# (11.8 MB) while the packed one is near-incompressible (13.7 MB) -- about
-# 1.9 MB of image for nothing. It also costs RAM at runtime: exec'ing a packed
-# binary decompresses all 43.5 MB into anonymous pages that cannot be evicted,
-# where the unpacked one is demand-paged from the squashfs. Where UPX does pay
-# off is the OTA path the Makefile targets -- self-updates install to
-# /var/lib/nanokvm/app on the ext4 data partition, uncompressed, and keep an
-# app.prev alongside. Set UPX_COMPRESS = "0" to leave /kvmapp's copy plain.
-UPX_COMPRESS ?= "1"
+# UPX packing of the server binary. OFF by default, matching nanokvm-app,
+# which dropped UPX from both its Makefile and its goreleaser releases: the
+# board has ~80 MB of RAM, and exec'ing a packed binary decompresses the whole
+# thing (43.5 MB on the 2026-08 tree) into anonymous pages that can never be
+# evicted, where the plain one is demand-paged from flash and its clean pages
+# are reclaimable under pressure. It does not save image space either: with
+# IMAGE_FSTYPES = squashfs-zst, zstd compresses the plain binary to 11.8 MB
+# while the packed one is near-incompressible (13.7 MB). Set UPX_COMPRESS = "1"
+# only to trade RAM for /var/lib/nanokvm disk space; the native UPX keeps that
+# path hermetic.
+UPX_COMPRESS ?= "0"
 
 DEPENDS += "${@bb.utils.contains('UPX_COMPRESS', '1', 'upx-native', '', d)}"
 
@@ -93,12 +89,12 @@ do_compile:append() {
     fi
 }
 
-# UPX rewrites the ELF into a self-extracting image, so the packaging strip
-# pass must not touch it -- `strip` on a packed binary corrupts it. There is
-# nothing to strip in any case: Go links with -s -w and does its own stripping,
-# which is what the already-stripped waiver below is for.
-INHIBIT_PACKAGE_STRIP = "${UPX_COMPRESS}"
-INHIBIT_PACKAGE_DEBUG_SPLIT = "${UPX_COMPRESS}"
+# Never run the packaging strip pass, packed or not. A packed binary would be
+# corrupted by `strip`, and a plain one has nothing to strip: Go links with
+# -s -w and does its own stripping, which is what the already-stripped waiver
+# below is for. Inhibiting unconditionally ships exactly what `go build` made.
+INHIBIT_PACKAGE_STRIP = "1"
+INHIBIT_PACKAGE_DEBUG_SPLIT = "1"
 
 # /kvmapp is the FACTORY copy of the app, baked into the read-only squashfs.
 # Self-updates never touch it: they install to /var/lib/nanokvm/app on the
