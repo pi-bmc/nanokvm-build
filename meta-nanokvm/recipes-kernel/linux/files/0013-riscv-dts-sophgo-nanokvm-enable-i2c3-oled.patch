@@ -1,0 +1,94 @@
+From: NanoKVM BSP <nanokvm@local>
+Subject: [PATCH] riscv: dts: sophgo: nanokvm: enable i2c3 for the status OLED
+
+The BMC drives an optional 128x64 SSD1306 status display (nanokvm-app,
+pkg/device/oled) and neither existing bus can carry it: i2c1's controller is
+in slave mode for the host's sensor push, and i2c4 is the HDMI bridge's bus on
+1.8V-only pads. Enable i2c@4030000 on the two free SDIO1 header pads that
+carry IIC3 and pin it at /dev/i2c-3.
+
+Wiring, for the module's four pins:
+
+	GND -> GND
+	VCC -> 3V3 (not 5V: the pads are not 5V tolerant and some modules
+	       pull SDA/SCL up to VCC rather than to their own regulator)
+	SCL -> SD1_CMD (header P22)
+	SDA -> SD1_CLK (header P23)
+
+The pad choice, the pull configuration and the reason the node has no child
+are explained inline in the DTS, because that is where anyone changing them
+will be looking.
+
+No kernel config change: I2C_DESIGNWARE_PLATFORM and I2C_CHARDEV are already
+on for the other two buses.
+
+Must follow 0012 -- it extends the aliases node 0012 adds and appends to the
+same board .dts.
+
+Not upstream -- local to this build.
+---
+--- a/arch/riscv/boot/dts/sophgo/sg2002-licheerv-nano-b.dts
++++ b/arch/riscv/boot/dts/sophgo/sg2002-licheerv-nano-b.dts
+@@ -347,6 +347,62 @@
+ / {
+ 	aliases {
+ 		i2c0 = &i2c1;
++		i2c3 = &i2c3;
+ 		i2c4 = &i2c4;
+ 	};
+ };
++
++/*
++ * i2c3 -- the front-panel status display (SSD1306 OLED, 0x3c).
++ *
++ * The display needs a bus of its own because neither existing one can carry
++ * it. i2c1 runs its controller in slave mode for the host's sensor push
++ * (eeprom@50 above), and a DesignWare controller is a master or a slave, not
++ * both: it cannot address a panel at all. i2c4 is the LT6911C's bus, its pads
++ * are IO_TYPE_1V8_ONLY, and the display module pulls SDA/SCL up to its 3.3V
++ * supply -- which is not a level those pads may see.
++ *
++ * IIC3 comes out on SD1_CMD (SCL) and SD1_CLK (SDA), function 2 on both
++ * (CVITek pad table: SD1_CMD__IIC3_SCL = 2, SD1_CLK__IIC3_SDA = 2). They are
++ * the two SDIO1 pads i2c1 left over that carry an I2C function this board is
++ * not already using -- SD1_D2/SD1_D1 are only an alternative route for IIC1 --
++ * and they sit on the same header, in the same 3.3V VDDIO_SD1 domain, as the
++ * i2c1 pair. Same pad type as i2c1_cfg, so the same properties.
++ *
++ * bias-pull-down = <0> is not redundant with bias-pull-up. These pads reset
++ * with their pull-down enabled, and pinctrl-cv18xx treats the two as separate
++ * bits: asking for the pull-up alone leaves both on, a 60k/62k divider that
++ * parks an undriven line at mid-rail. With a display fitted its own pull-ups
++ * win and nobody notices; with the header empty -- the normal state of a
++ * board without the option -- the controller reads a bus that is neither idle
++ * nor busy every time userspace probes for the panel. Cleared, an empty bus
++ * idles high and the probe gets a clean NACK.
++ *
++ * The node is deliberately empty: no ssd1306 child. The panel is optional and
++ * hot-pluggable, and it is driven from userspace through i2c-dev (nanokvm-app,
++ * pkg/device/oled), which handles its absence by probing. A child node would
++ * bind a kernel driver to a device that is usually not there and take the
++ * address away from the app when it is.
++ *
++ * 400kHz is within both the controller's and the SSD1306's range and brings a
++ * full 1KiB frame down to about 25ms on the wire.
++ */
++&pinctrl {
++	i2c3_cfg: i2c3-cfg {
++		i2c3-pins {
++			pinmux = <PINMUX(PIN_SD1_CMD, 2)>,
++				 <PINMUX(PIN_SD1_CLK, 2)>;
++			bias-pull-up;
++			bias-pull-down = <0>;
++			drive-strength-microamp = <10800>;
++			power-source = <3300>;
++		};
++	};
++};
++
++&i2c3 {
++	pinctrl-0 = <&i2c3_cfg>;
++	pinctrl-names = "default";
++	clock-frequency = <400000>;
++	status = "okay";
++};

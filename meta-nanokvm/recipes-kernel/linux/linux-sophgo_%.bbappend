@@ -71,6 +71,12 @@ FILESEXTRAPATHS:prepend := "${THISDIR}/files:"
 #        nothing can reach the bridge to read the input resolution or write
 #        EDID, so capture cannot be brought up. MUST follow 0003 and 0011 --
 #        it appends to the same board .dts they edit.
+#   0013 enables i2c3 on the SD1_CMD/SD1_CLK header pads and pins it at
+#        /dev/i2c-3, for the optional SSD1306 status display nanokvm-app
+#        drives through i2c-dev (pkg/device/oled). Neither other bus can carry
+#        it: i2c1's controller is a slave, and i2c4 is on 1.8V-only pads.
+#        Purely additive -- an empty header just NACKs the app's probe. MUST
+#        follow 0012: it extends the aliases node 0012 adds.
 # nanokvm.cfg is merged in do_configure:append below.
 SRC_URI:append:sg2002-licheervnano = " \
     file://0001-apply-dts-usb-dev.patch \
@@ -82,6 +88,7 @@ SRC_URI:append:sg2002-licheervnano = " \
     file://0010-riscv-export-arch-sync-dma.patch \
     file://0011-riscv-dts-sophgo-cv181x-multimedia.patch \
     file://0012-riscv-dts-sophgo-nanokvm-enable-i2c4.patch \
+    file://0013-riscv-dts-sophgo-nanokvm-enable-i2c3-oled.patch \
     file://nanokvm.cfg \
     "
 
